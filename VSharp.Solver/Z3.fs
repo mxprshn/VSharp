@@ -738,8 +738,17 @@ module internal Z3 =
             {state = state; subst = subst; complete = true}
 
 
-    let private ctx = new Context()
+    let private ctx = Simplification.context //new Context()
     let private builder = Z3Builder(ctx)
+
+    let private tryToSimplify expr =
+        try
+            printLog Trace $"Trying to simplify: {expr}"
+            let simpleDimple = Simplification.simplify expr
+            printLog Trace $"Simplified: {simpleDimple}"
+        with
+        | e -> 
+            printLog Trace $"Cannot simplify: {e.Message}"            
 
     type internal Z3Solver() =
 //        let optCtx = ctx.MkOptimize()
@@ -799,6 +808,7 @@ module internal Z3 =
                             yield query.expr
                         } |> Array.ofSeq
 //                    let pathAtoms = addSoftConstraints q.lvl
+                    tryToSimplify (query.expr :?> BoolExpr)
                     let result = optCtx.Check assumptions
                     match result with
                     | Status.SATISFIABLE ->
