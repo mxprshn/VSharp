@@ -738,13 +738,14 @@ module internal Z3 =
             {state = state; subst = subst; complete = true}
 
 
-    let private ctx = Simplification.context //new Context()
+    let private ctx = new Context()
     let private builder = Z3Builder(ctx)
+    let private simplifier = Simplification.Simplifier(ctx)
 
     let private tryToSimplify expr =
         try
             printLog Trace $"Trying to simplify: {expr}"
-            let simpleDimple = Simplification.simplify expr
+            let simpleDimple = simplifier.Simplify expr
             printLog Trace $"Simplified: {simpleDimple}"
         with
         | e -> 
