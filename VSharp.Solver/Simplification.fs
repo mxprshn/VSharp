@@ -1,5 +1,6 @@
 ﻿namespace VSharp.Solver
 
+open System.Net
 open Microsoft.Z3
 open System.Collections.Generic
 open VSharp
@@ -27,14 +28,53 @@ module public Simplification =
     type Simplifier(context : Context) =
 
         let solver = context.MkSolver()
+        let trueExpr = context.MkTrue()
+        let falseExpr = context.MkFalse()
+        
+        let isTrue =
+            function
+                | Leaf expr when expr.IsTrue -> true
+                | _ -> false
+                
+        // Move to utils?
+        let isTrue (expr : BoolExpr) = expr.IsTrue
+        
+        let isFalse =
+            function
+                | Leaf expr when expr.IsFalse -> true
+                | _ -> false
+                
+        let isFalse (expr : BoolExpr) = expr.IsFalse
+        
+        let mkAnd exprs =                    
+            if Seq.exists isFalse exprs then
+                falseExpr
+            else
+                let filtered = exprs |> Seq.filter (not << isTrue)
+                if Seq.isEmpty filtered then
+                    trueExpr
+                elif Seq.length filtered = 1 then
+                    Seq.head filtered
+                else
+                    context.MkAnd filtered
+                    
+        let mkOr exprs =
+            if Seq.exists isTrue exprs then
+                trueExpr
+            else
+                let filtered = exprs |> Seq.filter (not << isFalse)
+                if Seq.isEmpty filtered then
+                    falseExpr
+                elif Seq.length filtered = 1 then
+                    Seq.head filtered
+                else
+                    context.MkOr filtered
 
         let rec boolExprToGraph (cache : Dictionary<BoolExpr, Node>) (expr : BoolExpr) : Graph =
             if expr.IsAnd then
-                let args = seq expr.Args |> Seq.cast<BoolExpr> |> Seq.map (boolExprToGraph cache)
-                Conjunction(Seq.toList args)
+                Cps.Seq.map (boolExprToGraph cache) (seq expr.Args |> Seq.cast<BoolExpr>) (Conjunction << List.toSeq)
             elif expr.IsOr then
-                let args = seq expr.Args |> Seq.cast<BoolExpr> |> Seq.map (boolExprToGraph cache)
-                Disjunction(Seq.toList args)
+                Cps.Seq.map (boolExprToGraph cache) (seq expr.Args |> Seq.cast<BoolExpr>) (Disjunction << List.toSeq)
             else
                 let mutable leaf = Empty
                 if cache.TryGetValue(expr, &leaf) then
@@ -46,12 +86,15 @@ module public Simplification =
 
         let rec graphToBoolExpr graph =
             match graph with
-            | Empty -> context.MkTrue()
+            | Empty -> trueExpr
             | Leaf expr -> expr 
-            | Conjunction args -> args |> Seq.map graphToBoolExpr |> context.MkAnd 
-            | Disjunction args -> args |> Seq.map graphToBoolExpr |> context.MkOr
+            | Conjunction args ->
+                Cps.Seq.map graphToBoolExpr args mkAnd
+            | Disjunction args ->
+                Cps.Seq.map graphToBoolExpr args mkOr
 
         let checkRedundancy leaf critical =
+            // Use cache for graphToBoolExpr?
             let implication = context.MkAnd(graphToBoolExpr critical,  context.MkNot(graphToBoolExpr leaf))
             //printLog Trace $"Check-sat: {implication}"
             match solver.Check implication with
@@ -70,8 +113,9 @@ module public Simplification =
         let rec not node =
             match node with
             | Empty -> Empty
-            | Conjunction args -> args |> Seq.map not |> Disjunction
-            | Disjunction args -> args |> Seq.map not |> Conjunction
+            | Conjunction args -> Cps.Seq.map not args (Disjunction << List.toSeq) 
+            | Disjunction args -> Cps.Seq.map not args (Conjunction << List.toSeq) 
+            | Leaf expr -> Leaf(context.MkNot(expr))
 
         let rec simplifyNode node critical =
             match node with
@@ -118,4 +162,5 @@ module public Simplification =
             let graph = boolExprToGraph (Dictionary()) expr
             printLog Trace $"Graph: {graph}"
             let simplified = simplifyNode graph (Leaf(context.MkTrue()))
+            printLog Trace $"Simple dimple: {simplified}"
             graphToBoolExpr simplified
