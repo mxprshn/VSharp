@@ -18,7 +18,7 @@ type public SILI(options : SiliOptions) =
     let stopwatch = Stopwatch()
     let () = stopwatch.Start()
     let timeout = if options.timeout <= 0 then Int64.MaxValue else int64 options.timeout * 1000L
-    let branchReleaseTimeout = if options.timeout <= 0 then Int64.MaxValue else timeout * 80L / 100L
+    let branchReleaseTimeout = if options.timeout <= 0 then Int64.MaxValue else timeout * 50L / 100L
     let mutable branchesReleased = false
 
     let statistics = SILIStatistics()
@@ -60,8 +60,13 @@ type public SILI(options : SiliOptions) =
         | DFSMode -> DFSSearcher(infty) :> IForwardSearcher
         | ShortestDistanceBasedMode -> ShortestDistanceBasedSearcher(infty, statistics)
         | GuidedMode baseMode ->
-            let baseSearcher = mkForwardSearcher baseMode
-            GuidedSearcher(infty, options.recThreshold, baseSearcher, StatisticsTargetCalculator(statistics)) :> IForwardSearcher
+            match baseMode with
+            | ShortestDistanceBasedMode ->
+                let baseSearcher = BFSSearcher(infty) :> IForwardSearcher
+                GuidedSearcher(infty, baseSearcher, VisitingBasedTargetManager(statistics)) :> IForwardSearcher
+            | _ ->
+                let baseSearcher = mkForwardSearcher baseMode
+                GuidedSearcher(infty, baseSearcher, RecursionBasedTargetManager(statistics, options.recThreshold)) :> IForwardSearcher
 
     let mutable searcher : IBidirectionalSearcher =
         match options.explorationMode with

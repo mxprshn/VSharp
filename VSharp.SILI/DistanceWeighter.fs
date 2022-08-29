@@ -71,13 +71,13 @@ type ShortestDistanceWeighter(target : codeLocation) =
             localCFG.Calls
             |> Seq.filter (fun kv -> callGraphDistanceToTarget.ContainsKey kv.Value.Callee)
             |> Seq.map (fun kv -> { offset = localCFG.ResolveBasicBlock kv.Key; method = currLoc.method })
-        localWeight currLoc targets |> Option.map ((+) 32u)
+        localWeight currLoc targets |> Option.map ((+) 32u) |> Option.defaultValue 63u |> Some
 
     // Returns the number proportional to distance from loc to return of this method
     let postTargetWeight currLoc =
         let localCFG = currLoc.method.CFG
         let targets = localCFG.Sinks |> Seq.map (fun offset -> { offset = localCFG.ResolveBasicBlock offset; method = currLoc.method })
-        localWeight currLoc targets |> Option.map ((+) 32u)
+        localWeight currLoc targets |> Option.map ((+) 32u) |> Option.defaultValue 63u |> Some
 
     interface IWeighter with
         override x.Weight(state) =
@@ -87,8 +87,8 @@ type ShortestDistanceWeighter(target : codeLocation) =
                     let! callWeight = calculateCallWeight state
                     let! weight =
                         match callWeight with
-                        | 0u, _ -> targetWeight currLoc
-                        | _, 0u -> preTargetWeight currLoc
+                        | (0u, _) -> targetWeight currLoc
+                        | (_, 0u) -> preTargetWeight currLoc
                         | _ -> postTargetWeight currLoc
                     return weight * logarithmicScale state.stepsNumber
                 | None -> return 1u
