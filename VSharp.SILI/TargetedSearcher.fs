@@ -219,16 +219,16 @@ type GuidedSearcher(maxBound, threshold : uint, baseSearcher : IForwardSearcher,
         let cfg = startingMethod.CFG
 
         for retOffset in cfg.Sinks do
-            let target = {offset = retOffset; method = startingMethod}
+            let target = {offset = retOffset.StartOffset; method = startingMethod}
 
             match state.targets with
             | Some targets ->
                 state.targets <- Some <| Set.add target targets
                 if not <| Set.contains target targets then
-                    targetedSearcher.Insert (state |> Seq.singleton) |> ignore
+                    insertInTargetedSearcher state target
             | None ->
                 state.targets <-Some (Set.add target Set.empty)
-                targetedSearcher.Insert (state |> Seq.singleton) |> ignore
+                insertInTargetedSearcher state target
 
     let init states =
         baseSearcher.Init states
