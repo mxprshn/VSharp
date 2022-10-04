@@ -217,8 +217,9 @@ and CfgInfo internal (method : MethodWithBody) =
                     currentBasicBlock.FinalOffset <- offset
                     dfs' currentBasicBlock offset
                 | ExceptionMechanism ->
+                    //sinks.Add currentBasicBlock
                     currentBasicBlock.FinalOffset <- currentVertex
-                    ()
+                    //addEdge currentBasicBlock.StartVertex currentVertex
                 | Return ->
                     sinks.Add currentBasicBlock
                     currentBasicBlock.FinalOffset <- currentVertex
@@ -349,7 +350,7 @@ and Method internal (m : MethodBase) as this =
     member x.CheckAttributes with get() = Method.AttributesZone x
 
     member x.BasicBlocksCount with get() =
-        if x.HasBody then x.CFG.SortedOffsets |> Seq.length |> uint else 0u
+        if x.HasBody then x.CFG.SortedBasicBlocks.Count |> uint else 0u
 
     member x.BlocksCoveredByTests with get() = blocksCoverage.Keys |> Set.ofSeq
 
@@ -383,6 +384,14 @@ and [<CustomEquality; CustomComparison>] public codeLocation = {offset : offset;
 and IGraphTrackableState =
     abstract member CodeLocation: codeLocation
     abstract member CallStack: list<Method>
+
+module public CodeLocation =
+    let isBasicBlockCoveredByTest (blockStart : codeLocation) =
+        blockStart.method.BlocksCoveredByTests.Contains blockStart.offset
+
+    let hasSiblings (blockStart : codeLocation) =
+        let method = blockStart.method
+        method.HasBody && method.CFG.HasSiblings blockStart.offset
 
 type private ApplicationGraphMessage =
     | ResetQueryEngine
