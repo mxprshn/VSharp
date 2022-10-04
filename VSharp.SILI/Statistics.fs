@@ -134,7 +134,7 @@ type public SILIStatistics(statsDumpIntervalMs : int) as this =
         let suitable offset distance =
             let loc = { offset = offset; method = method }
             let totalHistory = Dict.getValueOrUpdate visitedWithHistory loc (fun () -> HashSet<_>())
-            let validDistance = distance <> infinity && distance <> 0u
+            let validDistance = distance <> infinity && (distance <> 0u || method.CFG.SortedBasicBlocks.Count = 1)
             let emptyHistory = totalHistory.Count = 0
 
             let nontrivialHistory = Seq.exists (fun loc -> hasSiblings loc && not <| totalHistory.Contains loc) history
