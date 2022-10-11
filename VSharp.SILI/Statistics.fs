@@ -272,14 +272,14 @@ type public SILIStatistics(statsDumpIntervalMs : int) as this =
             continuousStatistics.Add continuousStatisticsDump
 
     member x.TrackFinished (s : cilState) =
-        testsCount <- testsCount + 1u
-        x.CreateContinuousDump()
-        for block in s.history do
-            block.method.SetBlockIsCoveredByTest(block.offset, entryMethodOf s)
-
-            if block.method.InCoverageZone then
-                isVisitedBlocksNotCoveredByTestsRelevant <- false
-
+        for location in s.history do
+            if location.BasicBlock.FinalOffset = location.offset
+            then
+                location.method.SetBlockIsCoveredByTest location.offset |> ignore
+                
+                if location.method.InCoverageZone then        
+                    isVisitedBlocksNotCoveredByTestsRelevant <- false
+                
         visitedBlocksNotCoveredByTests.Remove s |> ignore
 
     member x.EmitError (s : cilState) (errorMessage : string) =
