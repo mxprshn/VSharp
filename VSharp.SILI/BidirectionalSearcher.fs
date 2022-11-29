@@ -102,6 +102,42 @@ type OnlyForwardSearcher(searcher : IForwardSearcher) =
         override x.Remove cilState = searcher.Remove cilState
         override x.StatesCount with get() = searcher.StatesCount
 
+// TODO: add init point searcher -- remove from in InitTarget(,)?
+type OnlyBackwardSearcher(searcher : IBackwardSearcher, targetedSearcher : ITargetedSearcher) =
+    interface IBidirectionalSearcher with
+        override x.Init _ pobs = searcher.Init pobs
+        override x.Statuses() = searcher.Statuses()
+        override x.Answer pob status = searcher.Answer pob status
+        override x.UpdatePobs pob newPob = searcher.Update pob newPob
+        override x.UpdateStates parent children =
+            let reached = targetedSearcher.Update parent children
+            Seq.iter (searcher.AddBranch >> ignore) reached
+        override x.Pick () =
+            match searcher.Pick() with
+            | Propagate(s,p) -> GoBack (s,p)
+            | InitTarget(from, pobs) ->
+                let tos = Seq.map (fun (pob : pob) -> Instruction(pob.loc.offset, pob.loc.method)) pobs
+                targetedSearcher.SetTargets from tos
+                match targetedSearcher.Pick() with
+                | Some s -> GoFront s
+                | None -> internalfail "Targeted searcher must pick state successfully immediately after adding new targets"
+            | NoAction ->
+                match targetedSearcher.Pick() with
+                | Some s -> GoFront s
+                | None -> Stop
+
+        // TODO
+        override x.States() = Seq.empty
+        override x.Reset() =
+            searcher.Reset()
+            targetedSearcher.Reset()
+        override x.Remove cilState =
+            searcher.Remove cilState
+            targetedSearcher.Remove cilState
+        // TODO
+        override x.StatesCount with get() = 0
+
+
 // TODO: check pob duplicates
 type BackwardSearcher() =
     let mainPobs = List<pob>()
