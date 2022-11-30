@@ -84,6 +84,9 @@ module internal CilStateOperations =
           entryMethod = Some entryMethod
           id = getNextStateId()
         }
+        
+    let deepCopy (cilState : cilState) =
+        { cilState with state = State.copy cilState.state; id = getNextStateId() }
 
     let makeInitialState m state = makeCilState m (instruction m 0<offsets>) 0u state
 

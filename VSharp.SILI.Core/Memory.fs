@@ -48,12 +48,6 @@ module internal Memory =
 
     let mutable memoryMode = ConcreteMemory
 
-    let copy (state : state) newPc =
-        let cm = state.concreteMemory.Copy()
-        let newTypeMocks = Dictionary<_,_>()
-        state.typeMocks |> Seq.iter (fun kvp -> newTypeMocks.Add(kvp.Key, kvp.Value.Copy()))
-        { state with pc = newPc; concreteMemory = cm }
-
     let private isZeroAddress (x : concreteHeapAddress) =
         x = VectorTime.zero
 

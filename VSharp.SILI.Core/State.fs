@@ -166,3 +166,13 @@ and
     IStatedSymbolicConstantSource =
         inherit ISymbolicConstantSource
         abstract Compose : state -> term
+        
+module State =
+    
+    let copyWithPc (state : state) newPc =
+        let cm = state.concreteMemory.Copy()
+        let newTypeMocks = Dictionary<_,_>()
+        state.typeMocks |> Seq.iter (fun kvp -> newTypeMocks.Add(kvp.Key, kvp.Value.Copy()))
+        { state with pc = newPc; concreteMemory = cm }
+        
+    let copy (state : state) = copyWithPc state state.pc

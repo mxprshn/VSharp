@@ -3,6 +3,8 @@ namespace VSharp.Interpreter.IL
 open System.Collections.Generic
 open FSharpx.Collections
 open VSharp
+open VSharp.Core
+open VSharp.Interpreter.IL
 
 type BidirectionalSearcher(forward : IForwardSearcher, backward : IBackwardSearcher, targeted : ITargetedSearcher) =
 
@@ -103,21 +105,20 @@ type OnlyForwardSearcher(searcher : IForwardSearcher) =
         override x.StatesCount with get() = searcher.StatesCount
 
 // TODO: add init point searcher -- remove from in InitTarget(,)?
-type OnlyBackwardSearcher(searcher : IBackwardSearcher, targetedSearcher : ITargetedSearcher) =
+type OnlyBackwardSearcher(backwardSearcher : IBackwardSearcher, targetedSearcher : ITargetedSearcher) =
     interface IBidirectionalSearcher with
-        override x.Init _ pobs = searcher.Init pobs
-        override x.Statuses() = searcher.Statuses()
-        override x.Answer pob status = searcher.Answer pob status
-        override x.UpdatePobs pob newPob = searcher.Update pob newPob
+        override x.Init _ pobs = backwardSearcher.Init pobs
+        override x.Statuses() = backwardSearcher.Statuses()
+        override x.Answer pob status = backwardSearcher.Answer pob status
+        override x.UpdatePobs pob newPob = backwardSearcher.Update pob newPob
         override x.UpdateStates parent children =
             let reached = targetedSearcher.Update parent children
-            Seq.iter (searcher.AddBranch >> ignore) reached
+            Seq.iter (backwardSearcher.AddBranch >> ignore) reached
         override x.Pick () =
-            match searcher.Pick() with
-            | Propagate(s,p) -> GoBack (s,p)
-            | InitTarget(from, pobs) ->
-                let tos = Seq.map (fun (pob : pob) -> Instruction(pob.loc.offset, pob.loc.method)) pobs
-                targetedSearcher.SetTargets from tos
+            match backwardSearcher.Pick() with
+            | Propagate(s, p) -> GoBack (s, p)
+            | InitTargets(fromToS) ->
+                fromToS |> Seq.iter targetedSearcher.AddTarget
                 match targetedSearcher.Pick() with
                 | Some s -> GoFront s
                 | None -> internalfail "Targeted searcher must pick state successfully immediately after adding new targets"
@@ -129,169 +130,113 @@ type OnlyBackwardSearcher(searcher : IBackwardSearcher, targetedSearcher : ITarg
         // TODO
         override x.States() = Seq.empty
         override x.Reset() =
-            searcher.Reset()
+            backwardSearcher.Reset()
             targetedSearcher.Reset()
         override x.Remove cilState =
-            searcher.Remove cilState
+            backwardSearcher.Remove cilState
             targetedSearcher.Remove cilState
         // TODO
         override x.StatesCount with get() = 0
 
+type BackwardSearcher(initPointSearcher : IInitPointSearcher) =
+    let toPropagate = Dictionary<pob, System.Collections.Generic.Queue<cilState>>()
+    let unansweredPobs = Dictionary<codeLocation, HashSet<pob>>()
+    let statesByTarget = Dictionary<codeLocation, HashSet<cilState>>()
+    let ancestorsOf = Dictionary<pob, HashSet<pob>>()
+    
+    let addPob (p : pob) =
+        // Move to utils
+        let mutable locationPobs = ref null
+        if not <| unansweredPobs.TryGetValue(p.loc, locationPobs) then
+            locationPobs <- ref (HashSet<pob>())
+            unansweredPobs.[p.loc] <- locationPobs.Value
+        locationPobs.Value.Add p |> ignore
+        
+        initPointSearcher.AddTarget p.loc
+        
+        if statesByTarget.ContainsKey p.loc then
+            toPropagate.[p] <- statesByTarget.[p.loc] |> Queue
+    
+    // TODO: CPS
+    let rec answerYes (s : cilState) (p : pob) =
+        toPropagate.Remove p |> ignore
+        unansweredPobs.[p.loc].Remove p |> ignore
+        
+        if unansweredPobs.[p.loc].Count = 0 then
+            initPointSearcher.RemoveTarget p.loc
+            unansweredPobs.Remove p.loc |> ignore
+            Application.removeGoal p.loc
+            
+        let ancestors = if ancestorsOf.ContainsKey p then ancestorsOf.[p] |> seq else Seq.empty
+        ancestors |> Seq.iter (answerYes s)
+    
+    interface IBackwardSearcher with    
+        
+        override x.Init pobs = pobs |> Seq.iter addPob
 
-// TODO: check pob duplicates
-type BackwardSearcher() =
-    let mainPobs = List<pob>()
-    let currentPobs = List<pob>()
-    let qBack = List<cilState * pob>()
-    let alreadyAddedInQBack = HashSet<cilState * pob>()
-    let ancestorOf = Dictionary<pob, List<pob>>()
-    let answeredPobs = Dictionary<pob, pobStatus>()
-    let loc2pob = Dictionary<codeLocation, List<pob>>()
-
-    let doAddPob (pob : pob) =
-        currentPobs.Add(pob)
-        let mutable pobsRef = ref null
-        if not <| loc2pob.TryGetValue(pob.loc, pobsRef) then
-            pobsRef <- ref (List<pob>())
-            loc2pob.Add(pob.loc, pobsRef.Value)
-        pobsRef.Value.Add pob
-
-    let addPob parent child =
-        if not <| ancestorOf.ContainsKey(child) then
-            ancestorOf.Add(child, List<_>())
-        ancestorOf.[child].Add(parent)
-        doAddPob child
-
-    let updateQBack s : pob list =
-        match ipOperations.ip2codeLocation (CilStateOperations.currentIp s) with
-        | None -> []
-        | Some loc ->
-            let pobsList = ref null
-            if loc2pob.TryGetValue(loc, pobsList) then
-                pobsList.Value |> Seq.iter (fun p ->
-                    if not <| alreadyAddedInQBack.Contains(s, p) then
-                        alreadyAddedInQBack.Add(s, p) |> ignore
-                        qBack.Add(s, p))
-                pobsList.Value |> List.ofSeq
-            else []
-
-    let rec answerYes (s' : cilState) (p' : pob) =
-        if (not <| loc2pob.ContainsKey(p'.loc)) then
-            assert(mainPobs.Contains p')
-        else
-            let list = loc2pob.[p'.loc]
-            list.Remove(p') |> ignore
-            if list.Count = 0 then loc2pob.Remove(p'.loc) |> ignore
-        currentPobs.Remove(p') |> ignore
-        qBack.RemoveAll(fun (_, p as pair) -> if p = p' then alreadyAddedInQBack.Remove(pair) |> ignore; true else false) |> ignore
-        if Seq.contains p' mainPobs then
-            mainPobs.Remove(p') |> ignore
-        if not(answeredPobs.ContainsKey p') then answeredPobs.Add(p', Witnessed s')
-        else answeredPobs.[p'] <- Witnessed s'
-        Application.removeGoal p'.loc
-        if ancestorOf.ContainsKey p' then
-//            assert(ancestorOf.[p'] <> null)
-            Seq.iter (fun (ancestor : pob) ->
-                assert(p' <> ancestor)
-                if currentPobs.Contains(ancestor) || mainPobs.Contains(ancestor) then
-                    answerYes s' ancestor) ancestorOf.[p']
-
-    let clear() =
-        mainPobs.Clear()
-        currentPobs.Clear()
-        qBack.Clear()
-        alreadyAddedInQBack.Clear()
-        ancestorOf.Clear()
-        answeredPobs.Clear()
-
-    interface IBackwardSearcher with
-        override x.Init pobs =
-            clear()
-            Seq.iter mainPobs.Add pobs
-            Seq.iter (fun p -> answeredPobs.Add(p, pobStatus.Unknown)) pobs
-            Seq.iter doAddPob pobs
-
-        override x.Update parent child = addPob parent child
+        override x.Update parent child =
+            // Check for answered pobs?
+            
+            assert(unansweredPobs.ContainsKey(parent.loc) && unansweredPobs.[parent.loc].Contains(parent))
+            
+            let mutable ancestors = ref null
+            if not <| ancestorsOf.TryGetValue(child, ancestors) then
+                ancestors <- ref (HashSet<pob>())
+                ancestorsOf.[child] <- ancestors.Value
+            ancestors.Value.Add parent |> ignore
+            
+            addPob child
 
         override x.Answer pob status =
             match status with
             | Witnessed s' -> answerYes s' pob
             | _ -> __notImplemented__()
-        override x.Statuses () = Seq.map (fun (kvp : KeyValuePair<pob, pobStatus>) -> kvp.Key, kvp.Value) answeredPobs
+            
+        override x.Statuses () = __notImplemented__()
 
         override x.Pick() =
-            if qBack.Count > 0 then
-                let ps = qBack.[0]
-                qBack.RemoveAt(0)
-                Propagate ps
-            else NoAction
+            if toPropagate.Count > 0 then
+                let pob = toPropagate.Keys |> Seq.head
+                let states = toPropagate.[pob]
+                let state = states.Dequeue()
+                if states.Count = 0 then
+                    toPropagate.Remove pob |> ignore
+                Propagate(state, pob)
+            else
+                let initPoints = initPointSearcher.Pick()
+                if Seq.isEmpty initPoints then NoAction
+                else InitTargets initPoints
 
         override x.AddBranch cilState =
-            updateQBack cilState
+            match ipOperations.ip2codeLocation (CilStateOperations.currentIp cilState) with
+            | None -> []
+            | Some loc ->
+                let cilState = CilStateOperations.deepCopy cilState
+                
+                let mutable locStates = ref null
+                if not <| statesByTarget.TryGetValue(loc, locStates) then
+                    locStates <- ref (HashSet<cilState>())
+                    statesByTarget.[loc] <- locStates.Value
+                locStates.Value.Add cilState |> ignore
+                
+                let pobsList = ref null
+                if unansweredPobs.TryGetValue(loc, pobsList) then
+                    for pob in pobsList.Value do
+                        let mutable states = ref null
+                        if not <| toPropagate.TryGetValue(pob, states) then
+                            states <- ref (Queue<cilState>())
+                            toPropagate.[pob] <- states.Value
+                        states.Value.Enqueue cilState
+                    pobsList.Value |> List.ofSeq
+                else
+                    []
 
-        override x.Remove cilState =
-            let removePredicate (cilState', _ as pair) =
-                if cilState = cilState' then alreadyAddedInQBack.Remove(pair) |> ignore; true
-                else false
-            let count = qBack.RemoveAll(removePredicate)
-            if count > 0 then
-                internalfail "BackwardSearcher.Remove: count > 0"
+        // TODO
+        override x.Remove cilState = ()
 
-        override x.Reset() = clear()
+        override x.Reset() =
+            toPropagate.Clear()
+            unansweredPobs.Clear()
+            ancestorsOf.Clear()
 
-        override x.StatesCount with get() = qBack.Count
-
-module DummyTargetedSearcher =
-    open CilStateOperations
-
-    type DummyTargetedSearcher() =
-        let forPropagation = Dictionary<ip, List<cilState>>()
-        let finished = Dictionary<ip, List<cilState>>()
-        let reached = Dictionary<ip, List<cilState>>()
-        let targets = Dictionary<ip, List<ip>>()
-
-        let addReached from s =
-            let mutable l = ref null
-            if not (reached.TryGetValue(from, l)) then
-                l <- ref (List<cilState>())
-                reached.Add(from, l.Value)
-            l.Value.Add s
-            Seq.singleton s
-        let add (s : cilState) : cilState seq =
-            let from = s.startingIP
-            assert(targets.ContainsKey from)
-            let current = currentIp s
-
-            if isIIEState s || isUnhandledError s || not(isExecutable(s)) then
-                finished.[from].Add(s); Seq.empty
-            elif targets.[from].Contains(current) then addReached from s
-            else
-                let list = forPropagation.[from]
-                if not <| list.Contains s then list.Add(s)
-                Seq.empty
-
-        interface ITargetedSearcher with
-            override x.SetTargets from tos =
-                if not (targets.ContainsKey from) then targets.Add(from, List<ip>())
-                targets.[from].AddRange(tos)
-
-            override x.Update parent children =
-                let from = parent.startingIP
-                assert(targets.ContainsKey from)
-                Seq.map add (Seq.cons parent children) |> Seq.concat
-
-            override x.Pick () =
-                targets.Keys |> Seq.tryPick (fun ip -> forPropagation.[ip] |> Seq.tryHead)
-
-            override x.Reset () =
-                forPropagation.Clear()
-                finished.Clear()
-                reached.Clear()
-                targets.Clear()
-
-            override x.Remove cilState =
-                forPropagation.Values |> Seq.iter (fun s -> s.Remove cilState |> ignore)
-                finished.Values |> Seq.iter (fun s -> s.Remove cilState |> ignore)
-                reached.Values |> Seq.iter (fun s -> s.Remove cilState |> ignore)
-
-            override x.StatesCount with get() = forPropagation.Values.Count
+        override x.StatesCount with get() = 0

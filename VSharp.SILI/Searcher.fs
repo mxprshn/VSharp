@@ -8,7 +8,7 @@ open VSharp.Utils
 open CilStateOperations
 
 type action =
-    | GoFront of cilState
+    | GoFront of cilState 
     | GoBack of cilState * pob
     | Stop
 
@@ -35,14 +35,19 @@ type IForwardSearcher =
     abstract member StatesCount : int
 
 type ITargetedSearcher =
-    abstract member SetTargets : ip -> ip seq -> unit
+    abstract member AddTarget : codeLocation * codeLocation -> unit
     abstract member Update : cilState -> cilState seq -> cilState seq // returns states that reached its target
     abstract member Pick : unit -> cilState option
     abstract member Reset : unit -> unit
     abstract member Remove : cilState -> unit
     abstract member StatesCount : int
+    
+type IInitPointSearcher =
+    abstract member Pick : unit -> (codeLocation * codeLocation) seq
+    abstract member AddTarget : codeLocation -> unit
+    abstract member RemoveTarget : codeLocation -> unit
 
-type backwardAction = Propagate of cilState * pob | InitTarget of ip * pob seq | NoAction
+type backwardAction = Propagate of cilState * pob | InitTargets of (codeLocation * codeLocation) seq | NoAction
 
 type IBackwardSearcher =
     abstract member Init : pob seq -> unit
@@ -163,7 +168,6 @@ type WeightedSearcher(maxBound, weighter : IWeighter, storage : IPriorityCollect
         override x.Reset() = storage.Clear()
         override x.Remove cilState = if storage.Contains cilState then storage.Remove cilState
         override x.StatesCount with get() = int x.Count
-
 
     member x.Weighter = weighter
     member x.Count = storage.Count

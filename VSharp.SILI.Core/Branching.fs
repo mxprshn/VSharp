@@ -16,7 +16,7 @@ module Branching =
             match pcs with
             | [] -> k []
             | (pc, v)::pcs ->
-                let copyState (pc, v) k = f (Memory.copy state pc) v k
+                let copyState (pc, v) k = f (State.copyWithPc state pc) v k
                 Cps.List.mapk copyState pcs (fun results ->
                     state.pc <- pc
                     f state v (fun r ->
@@ -42,7 +42,7 @@ module Branching =
                 thenBranch conditionState (List.singleton >> k)
             | SolverInteraction.SmtSat model ->
                 let thenState = conditionState
-                let elseState = Memory.copy conditionState elsePc
+                let elseState = State.copyWithPc conditionState elsePc
                 elseState.model <- model.mdl
                 thenState.pc <- thenPc
                 bothBranches thenState elseState condition k
@@ -74,7 +74,7 @@ module Branching =
                     thenBranch conditionState (List.singleton >> k)
                 | SolverInteraction.SmtSat model ->
                     let thenState = conditionState
-                    let elseState = Memory.copy conditionState elsePc
+                    let elseState = State.copyWithPc conditionState elsePc
                     elseState.model <- model.mdl
                     thenState.pc <- PC.add pc condition
                     execution thenState elseState condition k
@@ -97,7 +97,7 @@ module Branching =
                     elseBranch conditionState (List.singleton >> k)
                 | SolverInteraction.SmtSat model ->
                     let thenState = conditionState
-                    let elseState = Memory.copy conditionState (PC.add pc notCondition)
+                    let elseState = State.copyWithPc conditionState (PC.add pc notCondition)
                     thenState.model <- model.mdl
                     elseState.pc <- PC.add pc notCondition
                     execution thenState elseState condition k

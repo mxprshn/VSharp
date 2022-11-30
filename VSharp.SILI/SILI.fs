@@ -83,7 +83,7 @@ type public SILI(options : SiliOptions) =
         | TestCoverageMode(_, searchMode) ->
             let baseSearcher = mkForwardSearcher searchMode
             let baseSearcher = if isConcolicMode then ConcolicSearcher(baseSearcher) :> IForwardSearcher else baseSearcher
-            BidirectionalSearcher(baseSearcher, BackwardSearcher(), DummyTargetedSearcher.DummyTargetedSearcher()) :> IBidirectionalSearcher
+            OnlyForwardSearcher(baseSearcher) :> IBidirectionalSearcher
         | StackTraceReproductionMode _ -> __notImplemented__()
 
     let releaseBranches() =
