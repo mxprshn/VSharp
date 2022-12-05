@@ -78,13 +78,17 @@ type public SILI(options : SiliOptions) =
             let baseSearcher = mkForwardSearcher baseMode
             GuidedSearcher(infty, options.recThreshold, baseSearcher, StatisticsTargetCalculator(statistics)) :> IForwardSearcher
         | searchMode.ConcolicMode baseMode -> ConcolicSearcher(mkForwardSearcher baseMode) :> IForwardSearcher
+        | _ -> __unreachable__()
 
     let mutable searcher : IBidirectionalSearcher =
         match options.explorationMode with
         | TestCoverageMode(_, searchMode) ->
-            let baseSearcher = mkForwardSearcher searchMode
-            let baseSearcher = if isConcolicMode then ConcolicSearcher(baseSearcher) :> IForwardSearcher else baseSearcher
-            OnlyForwardSearcher(baseSearcher) :> IBidirectionalSearcher
+            if searchMode <> BackwardMode then
+                let baseSearcher = mkForwardSearcher searchMode
+                let baseSearcher = if isConcolicMode then ConcolicSearcher(baseSearcher) :> IForwardSearcher else baseSearcher
+                OnlyForwardSearcher(baseSearcher) :> IBidirectionalSearcher
+            else
+                OnlyBackwardSearcher(BackwardSearcher(PreviousBasicBlockInitPointSearcher()), TargetedSearcher(infty, always false)) :> IBidirectionalSearcher
         | StackTraceReproductionMode _ -> __notImplemented__()
 
     let releaseBranches() =
@@ -168,6 +172,12 @@ type public SILI(options : SiliOptions) =
             statistics.InternalFails.Add(e)
             action.Invoke(method, e)
 
+    let coveragePobsForMethod (method : Method) =
+        let cfg = method.CFG
+        cfg.SortedOffsets |> Seq.map (fun offset ->
+            {loc = {offset = offset; method = method}; lvl = infty; pc = EmptyPathCondition})
+        |> List.ofSeq
+
     member private x.Forward (s : cilState) =
         let loc = s.currentLoc
         // TODO: update pobs when visiting new methods; use coverageZone
@@ -233,11 +243,13 @@ type public SILI(options : SiliOptions) =
             match action with
             | GoFront s ->
                 try
+                    Console.WriteLine "Forward"
                     x.Forward(s)
                 with
                 | e -> reportStateInternalFail s e
             | GoBack(s, p) ->
                 try
+                    Console.WriteLine "Backward"
                     x.Backward p s
                 with
                 | e -> reportStateInternalFail s e
@@ -247,7 +259,7 @@ type public SILI(options : SiliOptions) =
         statistics.ExplorationStarted()
 
         // For backward compatibility. TODO: remove main pobs at all
-        let mainPobs = []
+        let mainPobs = initialStates |> Seq.collect (fun s -> coveragePobsForMethod (entryMethodOf s))
         Application.spawnStates (Seq.cast<_> initialStates)
         mainPobs |> Seq.map (fun pob -> pob.loc) |> Seq.toArray |> Application.addGoals
         searcher.Init initialStates mainPobs
@@ -269,11 +281,11 @@ type public SILI(options : SiliOptions) =
 //            reportFinished.Invoke machine.State
         | SymbolicMode ->
             x.BidirectionalSymbolicExecution()
-        searcher.Statuses() |> Seq.iter (fun (pob, status) ->
+(*        searcher.Statuses() |> Seq.iter (fun (pob, status) ->
             match status with
             | pobStatus.Unknown ->
                 Logger.warning "Unknown status for pob at %O" pob.loc
-            | _ -> ())
+            | _ -> ())*)
 
     member x.Reset entryMethods =
         API.Reset()

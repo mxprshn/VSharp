@@ -36,8 +36,9 @@ type IForwardSearcher =
 
 type ITargetedSearcher =
     abstract member Insert : cilState seq -> cilState seq
-    abstract member Update : cilState -> cilState seq -> cilState seq // returns states that reached its target
+    abstract member Update : cilState * cilState seq -> cilState seq // returns states that reached its target
     abstract member Pick : unit -> cilState option
+    abstract member Pick : (cilState -> bool) -> cilState option
     abstract member Reset : unit -> unit
     abstract member Remove : cilState -> unit
     abstract member StatesCount : int

@@ -1,4 +1,4 @@
-﻿namespace VSharp.Searchers
+﻿namespace VSharp.Interpreter.IL
 
 open System
 open System.Collections.Generic

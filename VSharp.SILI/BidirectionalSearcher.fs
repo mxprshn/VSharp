@@ -49,7 +49,7 @@ type BidirectionalSearcher(forward : IForwardSearcher, backward : IBackwardSearc
                 backward.AddBranch parent |> ignore
                 Seq.iter (backward.AddBranch >> ignore) children
             else
-                let reached = targeted.Update parent children
+                let reached = targeted.Update(parent, children)
                 Seq.iter (backward.AddBranch >> ignore) reached
         override x.States() = forward.States()
 
@@ -106,19 +106,27 @@ type OnlyForwardSearcher(searcher : IForwardSearcher) =
 
 // TODO: add init point searcher -- remove from in InitTarget(,)?
 type OnlyBackwardSearcher(backwardSearcher : IBackwardSearcher, targetedSearcher : ITargetedSearcher) =
+
+    let getIsolatedStates (fromLoc, toLoc) =
+        let states = StateInitialization.initializeIsolatedStates fromLoc
+        for state in states do CilStateOperations.addTarget state toLoc
+        states
+
     interface IBidirectionalSearcher with
         override x.Init _ pobs = backwardSearcher.Init pobs
         override x.Statuses() = backwardSearcher.Statuses()
         override x.Answer pob status = backwardSearcher.Answer pob status
         override x.UpdatePobs pob newPob = backwardSearcher.Update pob newPob
         override x.UpdateStates parent children =
-            let reached = targetedSearcher.Update parent children
+            let reached = targetedSearcher.Update(parent, children)
             Seq.iter (backwardSearcher.AddBranch >> ignore) reached
         override x.Pick () =
             match backwardSearcher.Pick() with
             | Propagate(s, p) -> GoBack (s, p)
             | InitTargets(fromToS) ->
-                //fromToS |> Seq.iter targetedSearcher.AddTarget
+                let states = fromToS |> Seq.collect getIsolatedStates
+                let reached = targetedSearcher.Insert states
+                Seq.iter (backwardSearcher.AddBranch >> ignore) reached
                 match targetedSearcher.Pick() with
                 | Some s -> GoFront s
                 | None -> internalfail "Targeted searcher must pick state successfully immediately after adding new targets"

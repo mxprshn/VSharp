@@ -51,12 +51,12 @@
         <Compile Include="TargetedSearcher.fs" />
         <Compile Include="FairSearcher.fs" />
         <Compile Include="BidirectionalSearcher.fs" />
+        <Compile Include="InitPointSearcher.fs" />
         <Compile Include="Communication.fs" />
         <Compile Include="Instrumenter.fs" />
         <Compile Include="ClientMachine.fs" />
         <Compile Include="TestGenerator.fs" />
         <Compile Include="SILI.fs" />
-        <Compile Include="InitPointSearcher.fs" />
     </ItemGroup>
 
     <ItemGroup>
