@@ -85,7 +85,7 @@ and ipStack = ip list
 
 type level = pdict<codeLocation, uint32>
 
-module ipOperations =
+module IpOperations =
     let exit m = Exit m
     let isExit = function
         | Exit _ -> true

@@ -118,7 +118,7 @@ type OnlyBackwardSearcher(backwardSearcher : IBackwardSearcher, targetedSearcher
             match backwardSearcher.Pick() with
             | Propagate(s, p) -> GoBack (s, p)
             | InitTargets(fromToS) ->
-                fromToS |> Seq.iter targetedSearcher.AddTarget
+                //fromToS |> Seq.iter targetedSearcher.AddTarget
                 match targetedSearcher.Pick() with
                 | Some s -> GoFront s
                 | None -> internalfail "Targeted searcher must pick state successfully immediately after adding new targets"
@@ -143,7 +143,7 @@ type BackwardSearcher(initPointSearcher : IInitPointSearcher) =
     let unansweredPobs = Dictionary<codeLocation, HashSet<pob>>()
     let statesByTarget = Dictionary<codeLocation, HashSet<cilState>>()
     let ancestorsOf = Dictionary<pob, HashSet<pob>>()
-    
+
     let addPob (p : pob) =
         // Move to utils
         let mutable locationPobs = ref null
@@ -151,47 +151,47 @@ type BackwardSearcher(initPointSearcher : IInitPointSearcher) =
             locationPobs <- ref (HashSet<pob>())
             unansweredPobs.[p.loc] <- locationPobs.Value
         locationPobs.Value.Add p |> ignore
-        
+
         initPointSearcher.AddTarget p.loc
-        
+
         if statesByTarget.ContainsKey p.loc then
             toPropagate.[p] <- statesByTarget.[p.loc] |> Queue
-    
+
     // TODO: CPS
     let rec answerYes (s : cilState) (p : pob) =
         toPropagate.Remove p |> ignore
         unansweredPobs.[p.loc].Remove p |> ignore
-        
+
         if unansweredPobs.[p.loc].Count = 0 then
             initPointSearcher.RemoveTarget p.loc
             unansweredPobs.Remove p.loc |> ignore
             Application.removeGoal p.loc
-            
+
         let ancestors = if ancestorsOf.ContainsKey p then ancestorsOf.[p] |> seq else Seq.empty
         ancestors |> Seq.iter (answerYes s)
-    
-    interface IBackwardSearcher with    
-        
+
+    interface IBackwardSearcher with
+
         override x.Init pobs = pobs |> Seq.iter addPob
 
         override x.Update parent child =
             // Check for answered pobs?
-            
+
             assert(unansweredPobs.ContainsKey(parent.loc) && unansweredPobs.[parent.loc].Contains(parent))
-            
+
             let mutable ancestors = ref null
             if not <| ancestorsOf.TryGetValue(child, ancestors) then
                 ancestors <- ref (HashSet<pob>())
                 ancestorsOf.[child] <- ancestors.Value
             ancestors.Value.Add parent |> ignore
-            
+
             addPob child
 
         override x.Answer pob status =
             match status with
             | Witnessed s' -> answerYes s' pob
             | _ -> __notImplemented__()
-            
+
         override x.Statuses () = __notImplemented__()
 
         override x.Pick() =
@@ -208,17 +208,17 @@ type BackwardSearcher(initPointSearcher : IInitPointSearcher) =
                 else InitTargets initPoints
 
         override x.AddBranch cilState =
-            match ipOperations.ip2codeLocation (CilStateOperations.currentIp cilState) with
+            match IpOperations.ip2codeLocation (CilStateOperations.currentIp cilState) with
             | None -> []
             | Some loc ->
                 let cilState = CilStateOperations.deepCopy cilState
-                
+
                 let mutable locStates = ref null
                 if not <| statesByTarget.TryGetValue(loc, locStates) then
                     locStates <- ref (HashSet<cilState>())
                     statesByTarget.[loc] <- locStates.Value
                 locStates.Value.Add cilState |> ignore
-                
+
                 let pobsList = ref null
                 if unansweredPobs.TryGetValue(loc, pobsList) then
                     for pob in pobsList.Value do

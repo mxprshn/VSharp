@@ -9,7 +9,7 @@ open CilStateOperations
 open VSharp
 open VSharp.Core
 open VSharp.Interpreter.IL
-open ipOperations
+open IpOperations
 open MethodBody
 
 type cfg = CfgInfo
@@ -837,7 +837,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
             | _ -> thisOption, args
         Memory.PopFrame cilState.state
         ILInterpreter.InitFunctionFrame cilState.state method thisOption (args |> List.map Some |> Some)
-        x.InitializeStatics cilState method.DeclaringType (fun cilState ->
+        ILInterpreter.InitializeStatics cilState method.DeclaringType (fun cilState ->
             setCurrentIp (instruction method 0<offsets>) cilState
             [cilState])
 
@@ -879,7 +879,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
             | None -> parameters
         Memory.NewStackFrame state (Some method) (parametersAndThis @ locals)
 
-    member x.InitFunctionFrameCIL (cilState : cilState) (method : Method) this paramValues =
+    static member InitFunctionFrameCIL (cilState : cilState) (method : Method) this paramValues =
         ILInterpreter.InitFunctionFrame cilState.state method this (paramValues |> Option.bind (List.map Some >> Some))
         pushToIp (instruction method 0<offsets>) cilState
 
@@ -932,7 +932,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
         let message = "NotNullAttribute violation"
         ILInterpreter.CheckAttributeAssumptions cilState method notNullAssumptions message true
 
-    member private x.InitStaticFieldWithDefaultValue state (f : FieldInfo) =
+    static member private InitStaticFieldWithDefaultValue state (f : FieldInfo) =
         assert f.IsStatic
         let fieldType = f.FieldType
         let value =
@@ -969,7 +969,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
     //       that caused statics initialization, so queue will try again to explore this instruction,
     //       but at that moment statics will be already initialized
 
-    member x.InitializeStatics (cilState : cilState) (t : Type) whenInitializedCont =
+    static member InitializeStatics (cilState : cilState) (t : Type) whenInitializedCont =
         let fields = t.GetFields(Reflection.staticBindingFlags)
         match t with
         | _ when t.IsGenericParameter -> whenInitializedCont cilState
@@ -979,7 +979,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
             | True -> whenInitializedCont cilState
             | _ ->
                 let staticConstructor = t.GetConstructors(Reflection.staticBindingFlags) |> Array.tryHead
-                Seq.iter (x.InitStaticFieldWithDefaultValue cilState.state) fields
+                Seq.iter (ILInterpreter.InitStaticFieldWithDefaultValue cilState.state) fields
                 Memory.InitializeStaticMembers cilState.state t
                 match staticConstructor with
                 | Some cctor ->
@@ -992,7 +992,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
                         || name = "System.Void System.Diagnostics.DebugProvider..cctor()")
                     then whenInitializedCont cilState
                     else
-                        x.InitFunctionFrameCIL cilState cctor None (Some [])
+                        ILInterpreter.InitFunctionFrameCIL cilState cctor None (Some [])
                         ILInterpreter.CheckDisallowNullAssumptionsAndReport cilState cctor
                 | None -> whenInitializedCont cilState
                 // TODO: make assumption ``Memory.withPathCondition state (!!typeInitialized)''
@@ -1080,7 +1080,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
         // Popping frame created for ancestor calledMethod
         popFrameOf cilState
         // Creating valid frame with stackKeys corresponding to actual targetMethod
-        x.InitFunctionFrameCIL cilState targetMethod (Some this) (Some args)
+        ILInterpreter.InitFunctionFrameCIL cilState targetMethod (Some this) (Some args)
         let cilStates = ILInterpreter.CheckDisallowNullAssumptionsAndReport cilState targetMethod
         Cps.List.mapk (x.InlineMethodBaseCallIfNeeded targetMethod) cilStates (List.concat >> k)
 
@@ -1274,11 +1274,11 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
         let calledMethod = resolveMethodFromMetadata m (offset + Offset.from OpCodes.Call.Size) |> Application.getMethod
         let getArgsAndCall cilState =
             let this, args = x.RetrieveCalledMethodAndArgs OpCodes.Call calledMethod cilState
-            x.InitFunctionFrameCIL cilState calledMethod this (Some args)
+            ILInterpreter.InitFunctionFrameCIL cilState calledMethod this (Some args)
             let cilStates = ILInterpreter.CheckDisallowNullAssumptionsAndReport cilState calledMethod
             Cps.List.mapk (x.CommonCall calledMethod) cilStates List.concat
         if isConcolicMode then getArgsAndCall cilState
-        else x.InitializeStatics cilState calledMethod.DeclaringType getArgsAndCall
+        else ILInterpreter.InitializeStatics cilState calledMethod.DeclaringType getArgsAndCall
     member x.CommonCallVirt (ancestorMethod : Method) (cilState : cilState) (k : cilState list -> 'a) =
         let this = Memory.ReadThis cilState.state ancestorMethod
         let call (cilState : cilState) k =
@@ -1308,7 +1308,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
                 | _ -> thisOption, ancestorMethod
             | _ -> thisOption, ancestorMethod
         // NOTE: there is no need to initialize statics, because they were initialized before ``newobj'' execution
-        x.InitFunctionFrameCIL cilState methodToCall this (Some args)
+        ILInterpreter.InitFunctionFrameCIL cilState methodToCall this (Some args)
         let cilStates = ILInterpreter.CheckDisallowNullAssumptionsAndReport cilState methodToCall
         Cps.List.mapk (x.CommonCallVirt methodToCall) cilStates List.concat
 
@@ -1365,7 +1365,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
         assert (calledMethod :> IMethod).IsConstructor
         let constructorInfo = calledMethod
         let typ = constructorInfo.DeclaringType
-        x.InitializeStatics cilState constructorInfo.DeclaringType (fun cilState ->
+        ILInterpreter.InitializeStatics cilState constructorInfo.DeclaringType (fun cilState ->
         let this, args = x.RetrieveCalledMethodAndArgs OpCodes.Newobj calledMethod cilState
         assert(Option.isNone this)
         let wasConstructorInlined stackSizeBefore (afterCall : cilState) =
@@ -1377,7 +1377,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
 
         let blockCase (cilState : cilState) =
             let callConstructor (cilState : cilState) reference afterCall =
-                x.InitFunctionFrameCIL cilState constructorInfo (Some reference) (Some args)
+                ILInterpreter.InitFunctionFrameCIL cilState constructorInfo (Some reference) (Some args)
                 let cilStates = ILInterpreter.CheckDisallowNullAssumptionsAndReport cilState constructorInfo
                 Cps.List.mapk (x.InlineMethodBaseCallIfNeeded constructorInfo) cilStates (List.concat >> afterCall)
 
@@ -1412,7 +1412,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
         let newIp = moveInstruction (fallThroughTarget m offset) (currentIp cilState)
         let fieldInfo = resolveFieldFromMetadata m (offset + Offset.from OpCodes.Ldsfld.Size)
         assert fieldInfo.IsStatic
-        x.InitializeStatics cilState fieldInfo.DeclaringType (fun cilState ->
+        ILInterpreter.InitializeStatics cilState fieldInfo.DeclaringType (fun cilState ->
         let declaringTermType = fieldInfo.DeclaringType
         let fieldId = Reflection.wrapField fieldInfo
         let value = if addressNeeded
@@ -1425,7 +1425,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
         let newIp = moveInstruction (fallThroughTarget m offset) (currentIp cilState) // TODO: remove this copy-paste
         let fieldInfo = resolveFieldFromMetadata m (offset + Offset.from OpCodes.Stsfld.Size)
         assert fieldInfo.IsStatic
-        x.InitializeStatics cilState fieldInfo.DeclaringType (fun cilState ->
+        ILInterpreter.InitializeStatics cilState fieldInfo.DeclaringType (fun cilState ->
         let declaringTermType = fieldInfo.DeclaringType
         let fieldId = Reflection.wrapField fieldInfo
         let value = pop cilState
@@ -1974,7 +1974,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
         let fullConstructorName = Reflection.getFullMethodName ctor
         assert (Loader.hasRuntimeExceptionsImplementation fullConstructorName)
         let proxyCtor = Loader.getRuntimeExceptionsImplementation fullConstructorName |> Application.getMethod
-        x.InitFunctionFrameCIL cilState proxyCtor None (Some arguments)
+        ILInterpreter.InitFunctionFrameCIL cilState proxyCtor None (Some arguments)
 
     member x.InvalidProgramException cilState =
         x.CreateException typeof<InvalidProgramException> [] cilState
@@ -2116,7 +2116,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
                 k [cilState]
             | Leave(EndFinally, ehc :: ehcs,  dst, m) ->
                 assert(isFinallyClause ehc)
-                let ip' = ipOperations.leave (instruction m ehc.handlerOffset) ehcs dst m
+                let ip' = IpOperations.leave (instruction m ehc.handlerOffset) ehcs dst m
                 setCurrentIp ip' cilState
                 clearEvaluationStackLastFrame cilState
                 k [cilState]
@@ -2124,7 +2124,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
                 let oldLength = List.length cilState.ipStack
                 let makeLeaveIfNeeded (result : cilState) =
                     if List.length result.ipStack = oldLength then
-                        let ip = ipOperations.leave (currentIp result) ehcs dst m
+                        let ip = IpOperations.leave (currentIp result) ehcs dst m
                         setCurrentIp ip result
                 makeStep' ip (fun states ->
                 List.iter makeLeaveIfNeeded states

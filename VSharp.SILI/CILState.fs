@@ -5,7 +5,7 @@ open System.Text
 open System.Collections.Generic
 open VSharp.Core
 open VSharp.Interpreter.IL
-open ipOperations
+open IpOperations
 
 [<ReferenceEquality>]
 type cilState =
@@ -67,28 +67,27 @@ module internal CilStateOperations =
         currentStateId <- currentStateId + 1u
         nextId
 
-    let makeCilState entryMethod curV initialEvaluationStackSize state =
-        { ipStack = [curV]
-          currentLoc = ip2codeLocation curV |> Option.get
+    let makeCilState entryMethod currentLoc initialEvaluationStackSize state =
+        let currentInstruction = instruction currentLoc.method currentLoc.offset
+        { ipStack = [currentInstruction]
+          currentLoc = currentLoc
           state = state
           filterResult = None
           iie = None
           level = PersistentDict.empty
-          startingIP = curV
+          startingIP = currentInstruction
           initialEvaluationStackSize = initialEvaluationStackSize
           stepsNumber = 0u
           suspended = false
           targets = None
           lastPushInfo = None
           history = Set.empty
-          entryMethod = Some entryMethod
+          entryMethod = entryMethod
           id = getNextStateId()
         }
-        
+
     let deepCopy (cilState : cilState) =
         { cilState with state = State.copy cilState.state; id = getNextStateId() }
-
-    let makeInitialState m state = makeCilState m (instruction m 0<offsets>) 0u state
 
     let mkCilStateHashComparer = cilStateComparer (fun a b -> a.GetHashCode().CompareTo(b.GetHashCode()))
 

@@ -240,7 +240,7 @@ and CfgInfo internal (cfg : CfgTemporaryData) =
     member this.Sinks = sinks
     member this.Calls = calls
     member this.IsLoopEntry offset = loopEntries.Contains offset
-    member internal this.ResolveBasicBlockIndex offset = resolveBasicBlockIndex offset
+    member this.ResolveBasicBlockIndex offset = resolveBasicBlockIndex offset
     member this.ResolveBasicBlock offset = resolveBasicBlock offset
     member this.IsBasicBlockStart offset = resolveBasicBlock offset = offset
     // Returns dictionary of shortest distances, in terms of basic blocks (1 step = 1 basic block transition)

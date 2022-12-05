@@ -8,7 +8,7 @@ open VSharp.Utils
 open CilStateOperations
 
 type action =
-    | GoFront of cilState 
+    | GoFront of cilState
     | GoBack of cilState * pob
     | Stop
 
@@ -35,13 +35,13 @@ type IForwardSearcher =
     abstract member StatesCount : int
 
 type ITargetedSearcher =
-    abstract member AddTarget : codeLocation * codeLocation -> unit
+    abstract member Insert : cilState seq -> cilState seq
     abstract member Update : cilState -> cilState seq -> cilState seq // returns states that reached its target
     abstract member Pick : unit -> cilState option
     abstract member Reset : unit -> unit
     abstract member Remove : cilState -> unit
     abstract member StatesCount : int
-    
+
 type IInitPointSearcher =
     abstract member Pick : unit -> (codeLocation * codeLocation) seq
     abstract member AddTarget : codeLocation -> unit

@@ -7,7 +7,7 @@ open VSharp.Interpreter.IL
 open VSharp.Utils
 open CilStateOperations
 
-type TargetedSearcher(maxBound, target, isPaused) =
+type SingleTargetSearcher(maxBound, target, isPaused) =
     inherit WeightedSearcher(maxBound, ShortestDistanceWeighter(target), BidictionaryPriorityQueue())
 
     override x.Insert states =
@@ -62,7 +62,7 @@ type ITargetCalculator =
 type StatisticsTargetCalculator(statistics : SILIStatistics) =
     interface ITargetCalculator with
         override x.CalculateTarget state =
-            let locStack = state.ipStack |> Seq.choose ipOperations.ip2codeLocation
+            let locStack = state.ipStack |> Seq.choose IpOperations.ip2codeLocation
             let inCoverageZone loc = loc.method.InCoverageZone
             Cps.Seq.foldlk (fun reachingLoc loc k ->
             match reachingLoc with
@@ -75,7 +75,7 @@ type StatisticsTargetCalculator(statistics : SILIStatistics) =
 
 
 type GuidedSearcher(maxBound, threshold : uint, baseSearcher : IForwardSearcher, targetCalculator : ITargetCalculator) =
-    let targetedSearchers = Dictionary<codeLocation, TargetedSearcher>()
+    let targetedSearchers = Dictionary<codeLocation, SingleTargetSearcher>()
     let getTargets (state : cilState) = state.targets
     let reachedOrUnreachableTargets = HashSet<codeLocation> ()
     let pausedStates = HashSet<cilState>()
@@ -95,7 +95,7 @@ type GuidedSearcher(maxBound, threshold : uint, baseSearcher : IForwardSearcher,
             onVertex && level > threshold
         | _ -> false
 
-    let mkTargetedSearcher target = TargetedSearcher(maxBound, target, isPaused)
+    let mkTargetedSearcher target = SingleTargetSearcher(maxBound, target, isPaused)
     let getTargetedSearcher target =
         Dict.getValueOrUpdate targetedSearchers target (fun () -> mkTargetedSearcher target)
 
@@ -233,7 +233,6 @@ type GuidedSearcher(maxBound, threshold : uint, baseSearcher : IForwardSearcher,
         override x.Reset() = reset ()
         override x.Remove cilState = remove cilState
         override x.StatesCount with get() = baseSearcher.StatesCount + (targetedSearchers.Values |> Seq.sumBy (fun s -> int s.Count))
-
 
 type ShortestDistanceBasedSearcher(maxBound, statistics : SILIStatistics) =
     inherit WeightedSearcher(maxBound, IntraproceduralShortestDistanceToUncoveredWeighter(statistics), BidictionaryPriorityQueue())

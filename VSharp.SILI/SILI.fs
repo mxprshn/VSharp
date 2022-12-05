@@ -11,6 +11,7 @@ open VSharp.Core
 open CilStateOperations
 open VSharp.Interpreter.IL
 open VSharp.Solver
+open StateInitialization
 
 type public SILI(options : SiliOptions) =
 
@@ -167,97 +168,6 @@ type public SILI(options : SiliOptions) =
             statistics.InternalFails.Add(e)
             action.Invoke(method, e)
 
-    static member private AllocateByRefParameters initialState (method : Method) =
-        let allocateIfByRef (pi : ParameterInfo) =
-            if pi.ParameterType.IsByRef then
-                if Memory.CallStackSize initialState = 0 then
-                    Memory.NewStackFrame initialState None []
-                let stackRef = Memory.AllocateTemporaryLocalVariableOfType initialState pi.Name (pi.Position + 1) (pi.ParameterType.GetElementType())
-                Some stackRef
-            else
-                None
-        method.Parameters |> Array.map allocateIfByRef |> Array.toList
-
-    member private x.TrySubstituteTypeParameters model (methodBase : MethodBase) =
-        let method = Application.getMethod methodBase
-        let getConcreteType = function
-        | ConcreteType t -> Some t
-        | _ -> None
-        try
-            match SolveGenericMethodParameters model method with
-            | Some(classParams, methodParams) ->
-                let classParams = classParams |> Array.choose getConcreteType
-                let methodParams = methodParams |> Array.choose getConcreteType
-                if classParams.Length = methodBase.DeclaringType.GetGenericArguments().Length &&
-                    (methodBase.IsConstructor || methodParams.Length = methodBase.GetGenericArguments().Length) then
-                    let declaringType = Reflection.concretizeTypeParameters methodBase.DeclaringType classParams
-                    let method = Reflection.concretizeMethodParameters declaringType methodBase methodParams
-                    Some method
-                else
-                    None
-            | _ -> None
-        with
-        | e ->
-            reportInternalFail (Some method) e
-            None
-
-    member private x.FormIsolatedInitialStates (method : Method, typModel : typeModel) =
-        try
-            let initialState = Memory.EmptyState()
-            initialState.model <- Memory.EmptyModel method typModel
-            let cilState = makeInitialState method initialState
-            let this(*, isMethodOfStruct*) =
-                if method.IsStatic then None // *TODO: use hasThis flag from Reflection
-                else
-                    let this =
-                        if Types.IsValueType method.DeclaringType then
-                            Memory.NewStackFrame initialState None []
-                            Memory.AllocateTemporaryLocalVariableOfType initialState "this" 0 method.DeclaringType
-                        else
-                            Memory.MakeSymbolicThis method
-                    !!(IsNullReference this) |> AddConstraint initialState
-                    Some this
-            let parameters = SILI.AllocateByRefParameters initialState method
-            ILInterpreter.InitFunctionFrame initialState method this (Some parameters)
-            let cilStates = ILInterpreter.CheckDisallowNullAssumptions cilState method false
-            assert (List.length cilStates = 1)
-            let [cilState] = cilStates
-            match options.executionMode with
-            | ConcolicMode -> List.singleton cilState
-            | SymbolicMode -> interpreter.InitializeStatics cilState method.DeclaringType List.singleton
-        with
-        | e ->
-            reportInternalFail (Some method) e
-            []
-
-    member private x.FormEntryPointInitialStates (method : Method, mainArguments : string[], typModel : typeModel) : cilState list =
-        try
-            assert method.IsStatic
-            let optionArgs = if mainArguments = null then None else Some mainArguments
-            let state = Memory.EmptyState()
-            state.model <- Memory.EmptyModel method typModel
-            let argsToState args =
-                let argTerms = Seq.map (fun str -> Memory.AllocateString str state) args
-                let stringType = typeof<string>
-                let argsNumber = MakeNumber mainArguments.Length
-                Memory.AllocateConcreteVectorArray state argsNumber stringType argTerms
-            let arguments = Option.map (argsToState >> Some >> List.singleton) optionArgs
-            ILInterpreter.InitFunctionFrame state method None arguments
-            if Option.isNone optionArgs then
-                // NOTE: if args are symbolic, constraint 'args != null' is added
-                let parameters = method.Parameters
-                assert(Array.length parameters = 1)
-                let argsParameter = Array.head parameters
-                let argsParameterTerm = Memory.ReadArgument state argsParameter
-                AddConstraint state (!!(IsNullReference argsParameterTerm))
-            Memory.InitializeStaticMembers state method.DeclaringType
-            let initialState = makeInitialState method state
-            [initialState]
-        with
-        | e ->
-            reportInternalFail (Some method) e
-            []
-
     member private x.Forward (s : cilState) =
         let loc = s.currentLoc
         // TODO: update pobs when visiting new methods; use coverageZone
@@ -398,24 +308,26 @@ type public SILI(options : SiliOptions) =
             reportFinished <- wrapOnTest onFinished None
             reportError <- wrapOnError onException None
             try
-                let trySubstituteTypeParameters method =
-                    let typeModel = typeModel.CreateEmpty()
-                    (Option.defaultValue method (x.TrySubstituteTypeParameters typeModel method), typeModel)
                 interpreter.ConfigureErrorReporter reportError
-                let isolated =
-                    isolated
-                    |> Seq.map trySubstituteTypeParameters
-                    |> Seq.map (fun (m, tm) -> Application.getMethod m, tm) |> Seq.toList
-                let entryPoints =
-                    entryPoints
-                    |> Seq.map (fun (m, a) ->
-                        let m, tm = trySubstituteTypeParameters m
-                        (Application.getMethod m, a, tm))
+                let initializeIsolatedState methodBase =
+                    try
+                       initializeIsolatedMethodStates methodBase (options.executionMode = ConcolicMode) |> Some
+                    with e ->
+                        reportInternalFail (Application.getMethod methodBase |> Some) e
+                        None
+                let initializeEntryPointState (methodBase, args) =
+                    try
+                       initializeMainMethodStates methodBase args |> Some
+                    with e ->
+                        reportInternalFail (Application.getMethod methodBase |> Some) e
+                        None
+                let statesWithMethods =
+                    isolated |> Seq.map initializeIsolatedState
+                    |> Seq.append (entryPoints |> Seq.map initializeEntryPointState)
+                    |> Seq.choose id
                     |> Seq.toList
-                x.Reset ((isolated |> List.map fst) @ (entryPoints |> List.map (fun (m, _, _) -> m)))
-                let isolatedInitialStates = isolated |> List.collect x.FormIsolatedInitialStates
-                let entryPointsInitialStates = entryPoints |> List.collect x.FormEntryPointInitialStates
-                let iieStates, initialStates = isolatedInitialStates @ entryPointsInitialStates |> List.partition (fun state -> state.iie.IsSome)
+                x.Reset(statesWithMethods |> List.map fst)
+                let iieStates, initialStates = statesWithMethods |> List.collect snd |> List.partition (fun state -> state.iie.IsSome)
                 iieStates |> List.iter reportStateIncomplete
                 statistics.SetStatesGetter(fun () -> searcher.States())
                 statistics.SetStatesCountGetter(fun () -> searcher.StatesCount)
