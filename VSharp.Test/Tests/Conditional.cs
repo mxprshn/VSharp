@@ -151,7 +151,7 @@ namespace IntegrationTests
             }
         }
 
-        [TestSvm(100, strat: SearchStrategy.Backward, timeout: 10)]
+        [TestSvm(100, strat: SearchStrategy.Backward)]
         public static int DeclareAfterReturn(bool flag, bool f, int x)
         {
             if (f)

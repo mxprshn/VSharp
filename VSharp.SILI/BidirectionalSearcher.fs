@@ -1,6 +1,8 @@
 namespace VSharp.Interpreter.IL
 
+open System
 open System.Collections.Generic
+open System.IO
 open FSharpx.Collections
 open VSharp
 open VSharp.Core
@@ -107,32 +109,48 @@ type OnlyForwardSearcher(searcher : IForwardSearcher) =
 // TODO: add init point searcher -- remove from in InitTarget(,)?
 type OnlyBackwardSearcher(backwardSearcher : IBackwardSearcher, targetedSearcher : ITargetedSearcher) =
 
-    let getIsolatedStates (fromLoc, toLoc) =
-        let states = StateInitialization.initializeIsolatedStates fromLoc
-        for state in states do CilStateOperations.addTarget state toLoc
-        states
-
     interface IBidirectionalSearcher with
-        override x.Init _ pobs = backwardSearcher.Init pobs
+        override x.Init _ pobs =
+            Console.WriteLine "Bidirectional searcher: init"
+            Console.WriteLine $"Pobs: {pobs |> Seq.toList}"
+            backwardSearcher.Init pobs
         override x.Statuses() = backwardSearcher.Statuses()
-        override x.Answer pob status = backwardSearcher.Answer pob status
-        override x.UpdatePobs pob newPob = backwardSearcher.Update pob newPob
+        override x.Answer pob status =
+            Console.WriteLine $"Bidirectional searcher: answer {pob}"
+            backwardSearcher.Answer pob status
+        override x.UpdatePobs pob newPob =
+            Console.WriteLine $"Bidirectional searcher: update pob {pob} -> {newPob}"
+            backwardSearcher.Update pob newPob
         override x.UpdateStates parent children =
+            Console.WriteLine $"Bidirectional searcher: update states {parent.id} -> {children |> Seq.map (fun s -> s.id) |> Seq.toList}"
             let reached = targetedSearcher.Update(parent, children)
             Seq.iter (backwardSearcher.AddBranch >> ignore) reached
         override x.Pick () =
             match backwardSearcher.Pick() with
-            | Propagate(s, p) -> GoBack (s, p)
+            | Propagate(s, p) ->
+                Console.WriteLine $"Bidirectional searcher: propagate pob {p} to state {s.id}"
+                GoBack (s, p)
             | InitTargets(fromToS) ->
-                let states = fromToS |> Seq.collect getIsolatedStates
+                let getIsolatedStates (fromLoc, toLoc) =
+                    let states = StateInitialization.initializeIsolatedStates fromLoc
+                    for state in states do CilStateOperations.addTarget state toLoc
+                    states
+                let states = fromToS |> Seq.collect getIsolatedStates |> Seq.toList
+                Console.WriteLine "kek"
                 let reached = targetedSearcher.Insert states
-                Seq.iter (backwardSearcher.AddBranch >> ignore) reached
+                Console.WriteLine $"Bidirectional searcher: init targets {fromToS |> Seq.toList}"
+                //Seq.iter (backwardSearcher.AddBranch >> ignore) reached
                 match targetedSearcher.Pick() with
-                | Some s -> GoFront s
+                | Some s ->
+                    Console.WriteLine $"Bidirectional searcher: pick {s.id} from targeted"
+                    GoFront s
                 | None -> internalfail "Targeted searcher must pick state successfully immediately after adding new targets"
             | NoAction ->
+                Console.WriteLine $"Bidirectional searcher: backward returned no action"
                 match targetedSearcher.Pick() with
-                | Some s -> GoFront s
+                | Some s ->
+                    Console.WriteLine $"Bidirectional searcher: pick {s.id} from targeted"
+                    GoFront s
                 | None -> Stop
 
         // TODO
@@ -203,6 +221,7 @@ type BackwardSearcher(initPointSearcher : IInitPointSearcher) =
         override x.Statuses () = __notImplemented__()
 
         override x.Pick() =
+            Console.WriteLine $"Pick from backward, toPropagate count: {toPropagate.Count}"
             if toPropagate.Count > 0 then
                 let pob = toPropagate.Keys |> Seq.head
                 let states = toPropagate.[pob]
