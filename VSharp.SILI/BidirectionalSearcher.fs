@@ -107,7 +107,7 @@ type OnlyForwardSearcher(searcher : IForwardSearcher) =
         override x.StatesCount with get() = searcher.StatesCount
 
 // TODO: add init point searcher -- remove from in InitTarget(,)?
-type OnlyBackwardSearcher(backwardSearcher : IBackwardSearcher, targetedSearcher : ITargetedSearcher) =
+type OnlyBackwardSearcher(backwardSearcher : IBackwardSearcher, targetedSearcher : ITargetedSearcher, stateInitializer : IStateInitializer) =
 
     interface IBidirectionalSearcher with
         override x.Init _ pobs =
@@ -132,14 +132,14 @@ type OnlyBackwardSearcher(backwardSearcher : IBackwardSearcher, targetedSearcher
                 GoBack (s, p)
             | InitTargets(fromToS) ->
                 let getIsolatedStates (fromLoc, toLoc) =
-                    let states = StateInitialization.initializeIsolatedStates fromLoc
+                    let states = stateInitializer.InitializeIsolatedStates fromLoc
                     for state in states do CilStateOperations.addTarget state toLoc
                     states
                 let states = fromToS |> Seq.collect getIsolatedStates |> Seq.toList
                 Console.WriteLine "kek"
                 let reached = targetedSearcher.Insert states
                 Console.WriteLine $"Bidirectional searcher: init targets {fromToS |> Seq.toList}"
-                //Seq.iter (backwardSearcher.AddBranch >> ignore) reached
+                Seq.iter (backwardSearcher.AddBranch >> ignore) reached
                 match targetedSearcher.Pick() with
                 | Some s ->
                     Console.WriteLine $"Bidirectional searcher: pick {s.id} from targeted"

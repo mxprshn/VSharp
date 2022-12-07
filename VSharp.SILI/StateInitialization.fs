@@ -1,13 +1,23 @@
 ﻿namespace VSharp.Interpreter.IL
 
+open System.Collections.Generic
 open System.Reflection
 open VSharp
 open VSharp.Core
 open CilStateOperations
 
-module StateInitialization =
+type IStateInitializer =
+    abstract member InitializeIsolatedMethodStates : MethodBase -> Method * cilState list
+    abstract member InitializeMainMethodStates : MethodBase -> string[] -> Method * cilState list
+    abstract member InitializeIsolatedStates : codeLocation -> cilState list
+    abstract member Reset : unit -> unit
 
-    let private trySubstituteTypeParameters (methodBase : MethodBase) =
+type StateInitializer(isConcolicMode : bool) =
+
+    let initializedIsolatedMethods = Dictionary<Method, typeModel>()
+    let initializedMainMethods = Dictionary<Method, typeModel * string[]>()
+
+    let trySubstituteTypeParameters (methodBase : MethodBase) =
         let model = typeModel.CreateEmpty()
         let method = Application.getMethod methodBase
         let getConcreteType = function
@@ -27,7 +37,7 @@ module StateInitialization =
         | _ ->
             methodBase, model
 
-    let private allocateByRefParameters initialState (method : Method) =
+    let allocateByRefParameters initialState (method : Method) =
         let allocateIfByRef (pi : ParameterInfo) =
             if pi.ParameterType.IsByRef then
                 if Memory.CallStackSize initialState = 0 then
@@ -38,7 +48,7 @@ module StateInitialization =
                 None
         method.Parameters |> Array.map allocateIfByRef |> Array.toList
 
-    let private initializeIsolatedStatesPrivate (entryMethod : Method option) (currentLoc : codeLocation) (typeModel : typeModel) (isConcolic : bool) =
+    let initializeIsolatedStates (entryMethod : Method option) (currentLoc : codeLocation) (typeModel : typeModel) =
         let method = currentLoc.method
         let initialState = Memory.EmptyState()
         initialState.model <- Memory.EmptyModel currentLoc.method typeModel
@@ -59,12 +69,12 @@ module StateInitialization =
         let cilStates = ILInterpreter.CheckDisallowNullAssumptions cilState method false
         assert (List.length cilStates = 1)
         let [cilState] = cilStates
-        if isConcolic then
+        if isConcolicMode then
             List.singleton cilState
         else
             ILInterpreter.InitializeStatics cilState method.DeclaringType List.singleton
 
-    let private initializeMainMethodStatesPrivate (method : Method) (mainArguments : string[]) (typModel : typeModel) : cilState list =
+    let initializeMainMethodStates (method : Method) (mainArguments : string[]) (typModel : typeModel) : cilState list =
         assert method.IsStatic
         let optionArgs = if mainArguments = null then None else Some mainArguments
         let state = Memory.EmptyState()
@@ -87,16 +97,31 @@ module StateInitialization =
         let initialState = makeCilState (Some method) { method = method; offset = 0<offsets> } 0u state
         [initialState]
 
-    let initializeIsolatedMethodStates (method : MethodBase) (isConcolic : bool) =
-        let method, typeModel = trySubstituteTypeParameters method
-        let method = Application.getMethod method
-        let loc = { method = method; offset = 0<offsets> }
-        method, initializeIsolatedStatesPrivate (Some method) loc typeModel isConcolic
+    interface IStateInitializer with
+        override x.InitializeIsolatedMethodStates (method : MethodBase) =
+            let method, typeModel = trySubstituteTypeParameters method
+            let method = Application.getMethod method
+            let loc = { method = method; offset = 0<offsets> }
+            initializedIsolatedMethods.[method] <- typeModel
+            method, initializeIsolatedStates (Some method) loc typeModel
 
-    let initializeMainMethodStates (method : MethodBase) (args : string[]) =
-        let method, typeModel = trySubstituteTypeParameters method
-        let method = Application.getMethod method
-        method, initializeMainMethodStatesPrivate method args typeModel
+        override x.InitializeMainMethodStates (method : MethodBase) (args : string[]) =
+            let method, typeModel = trySubstituteTypeParameters method
+            let method = Application.getMethod method
+            initializedMainMethods.[method] <- (typeModel, args)
+            method, initializeMainMethodStates method args typeModel
 
-    let initializeIsolatedStates (startingLocation : codeLocation) =
-        initializeIsolatedStatesPrivate None startingLocation (typeModel.CreateEmpty()) false
+        override x.InitializeIsolatedStates (startingLocation : codeLocation) =
+            let isOnMethodStart = startingLocation.offset = 0<offsets>
+            if isOnMethodStart && initializedMainMethods.ContainsKey startingLocation.method then
+                let typeModel, args = initializedMainMethods.[startingLocation.method]
+                initializeMainMethodStates startingLocation.method args typeModel
+            elif isOnMethodStart && initializedIsolatedMethods.ContainsKey startingLocation.method then
+                let typeModel = initializedIsolatedMethods.[startingLocation.method]
+                initializeIsolatedStates (Some startingLocation.method) startingLocation typeModel
+            else
+                initializeIsolatedStates None startingLocation (typeModel.CreateEmpty())
+
+        override x.Reset() =
+            initializedIsolatedMethods.Clear()
+            initializedMainMethods.Clear()

@@ -90,7 +90,8 @@ type ShortestDistanceWeighter(target : codeLocation) =
                         | 0u, _ -> targetWeight currLoc
                         | _, 0u -> preTargetWeight currLoc
                         | _ -> postTargetWeight currLoc
-                    return weight * logarithmicScale state.stepsNumber
+                    // Why we need steps number
+                    return weight //* logarithmicScale state.stepsNumber
                 | None -> return 1u
             }
         override x.Next() = 0u

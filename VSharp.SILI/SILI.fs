@@ -11,7 +11,6 @@ open VSharp.Core
 open CilStateOperations
 open VSharp.Interpreter.IL
 open VSharp.Solver
-open StateInitialization
 
 type public SILI(options : SiliOptions) =
 
@@ -31,7 +30,9 @@ type public SILI(options : SiliOptions) =
         match options.executionMode with
         | ConcolicMode -> true
         | SymbolicMode -> false
+
     let interpreter = ILInterpreter(isConcolicMode)
+    let stateInitializer = StateInitializer(isConcolicMode) :> IStateInitializer
 
     let mutable reportFinished : cilState -> unit = fun _ -> internalfail "reporter not configured!"
     let mutable reportError : cilState -> string -> unit = fun _ -> internalfail "reporter not configured!"
@@ -88,7 +89,7 @@ type public SILI(options : SiliOptions) =
                 let baseSearcher = if isConcolicMode then ConcolicSearcher(baseSearcher) :> IForwardSearcher else baseSearcher
                 OnlyForwardSearcher(baseSearcher) :> IBidirectionalSearcher
             else
-                OnlyBackwardSearcher(BackwardSearcher(PreviousBasicBlockInitPointSearcher()), TargetedSearcher(infty, always false)) :> IBidirectionalSearcher
+                OnlyBackwardSearcher(BackwardSearcher(PreviousBasicBlockInitPointSearcher()), TargetedSearcher(infty, always false), stateInitializer) :> IBidirectionalSearcher
         | StackTraceReproductionMode _ -> __notImplemented__()
 
     let releaseBranches() =
@@ -162,7 +163,7 @@ type public SILI(options : SiliOptions) =
             statistics.InternalFails.Add(e)
             Application.terminateState state
             searcher.Remove state
-            action.Invoke(entryMethodOf state |> Some, e)
+            action.Invoke(state.entryMethod, e)
 
     let wrapOnInternalFail (action : Action<Method option, Exception>) (method : Method option) (e : Exception) =
         match e with
@@ -174,7 +175,7 @@ type public SILI(options : SiliOptions) =
 
     let coveragePobsForMethod (method : Method) =
         let cfg = method.CFG
-        cfg.SortedOffsets |> Seq.map (fun offset ->
+        cfg.Sinks |> Seq.map (fun offset ->
             {loc = {offset = offset; method = method}; lvl = infty; pc = EmptyPathCondition})
         |> List.ofSeq
 
@@ -290,6 +291,7 @@ type public SILI(options : SiliOptions) =
     member x.Reset entryMethods =
         API.Reset()
         SolverPool.reset()
+        stateInitializer.Reset()
         statistics.Reset()
         searcher.Reset()
         isStopped <- false
@@ -323,13 +325,13 @@ type public SILI(options : SiliOptions) =
                 interpreter.ConfigureErrorReporter reportError
                 let initializeIsolatedState methodBase =
                     try
-                       initializeIsolatedMethodStates methodBase (options.executionMode = ConcolicMode) |> Some
+                       stateInitializer.InitializeIsolatedMethodStates methodBase |> Some
                     with e ->
                         reportInternalFail (Application.getMethod methodBase |> Some) e
                         None
                 let initializeEntryPointState (methodBase, args) =
                     try
-                       initializeMainMethodStates methodBase args |> Some
+                       stateInitializer.InitializeMainMethodStates methodBase args |> Some
                     with e ->
                         reportInternalFail (Application.getMethod methodBase |> Some) e
                         None
@@ -339,6 +341,7 @@ type public SILI(options : SiliOptions) =
                     |> Seq.choose id
                     |> Seq.toList
                 x.Reset(statesWithMethods |> List.map fst)
+
                 let iieStates, initialStates = statesWithMethods |> List.collect snd |> List.partition (fun state -> state.iie.IsSome)
                 iieStates |> List.iter reportStateIncomplete
                 statistics.SetStatesGetter(fun () -> searcher.States())
