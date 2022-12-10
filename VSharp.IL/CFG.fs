@@ -12,6 +12,10 @@ type coverageType =
     | ByTest
     | ByEntryPointTest
 
+module CallGraph =
+    let callGraphDistanceFrom = Dictionary<Assembly, GraphUtils.distanceCache<ICallGraphNode>>()
+    let callGraphDistanceTo = Dictionary<Assembly, GraphUtils.distanceCache<IReversedCallGraphNode>>()
+    
 type [<Measure>] terminalSymbol
 
 type ICfgNode =
@@ -352,6 +356,30 @@ and Method internal (m : MethodBase) as this =
     member x.BasicBlocksCount with get() =
         if x.HasBody then x.CFG.SortedBasicBlocks.Count |> uint else 0u
 
+    member this.CallGraphDistanceFromMe
+        with get () =
+            let assembly = this.Module.Assembly
+            let callGraphDist = Dict.getValueOrUpdate CallGraph.callGraphDistanceFrom assembly (fun () -> Dictionary<_, _>())
+            Dict.getValueOrUpdate callGraphDist this (fun () ->        
+            let dist = incrementalSourcedDijkstraAlgo (this :> ICallGraphNode) callGraphDist
+            let distFromNode = Dictionary<ICallGraphNode, uint>()
+            for i in dist do
+                if i.Value <> infinity then
+                    distFromNode.Add(i.Key, i.Value)
+            distFromNode)
+            
+    member this.CallGraphDistanceToMe
+        with get () =
+            let assembly = this.Module.Assembly
+            let callGraphDist = Dict.getValueOrUpdate CallGraph.callGraphDistanceTo assembly (fun () -> Dictionary<_, _>())
+            Dict.getValueOrUpdate callGraphDist this (fun () ->        
+            let dist = incrementalSourcedDijkstraAlgo (this :> IReversedCallGraphNode) callGraphDist
+            let distToNode = Dictionary<IReversedCallGraphNode, uint>()
+            for i in dist do
+                if i.Value <> infinity then
+                    distToNode.Add(i.Key, i.Value)
+            distToNode) 
+                       
     member x.BlocksCoveredByTests with get() = blocksCoverage.Keys |> Set.ofSeq
 
     member x.BlocksCoveredFromEntryPoint with get() =
