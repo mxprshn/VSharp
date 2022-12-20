@@ -9,8 +9,8 @@ type PreviousBasicBlockInitPointSearcher() =
 
     let queue = Queue<codeLocation * codeLocation>()
 
-    let addTarget (loc : codeLocation) =
-        let bbOffset = loc.method.CFG.ResolveBasicBlock loc.offset
+    let addTarget (loc : codeLocation) = ()
+        (*let bbOffset = loc.method.CFG.ResolveBasicBlock loc.offset
         if bbOffset = 0<offsets> && loc.offset <> 0<offsets> then
             let initCodeLocation = { loc with offset = 0<offsets> }
             Console.WriteLine $"Created init point: {initCodeLocation} -> {loc}"
@@ -24,7 +24,7 @@ type PreviousBasicBlockInitPointSearcher() =
             for blockOffset in previousBlocks do
                 let initCodeLocation = { loc with offset = blockOffset }
                 Console.WriteLine $"Created init point: {initCodeLocation} -> {loc}"
-                queue.Enqueue(initCodeLocation, loc)
+                queue.Enqueue(initCodeLocation, loc)*)
 
     let pick() = if queue.Count = 0 then Seq.empty else queue.Dequeue() |> Seq.singleton
 

@@ -225,10 +225,10 @@ type GuidedSearcher(maxBound, threshold : uint, baseSearcher : IForwardSearcher,
             | Some targets ->
                 state.targets <- Some <| Set.add target targets
                 if not <| Set.contains target targets then
-                    insertInTargetedSearcher state target
+                    targetedSearcher.Insert (state |> Seq.singleton) |> ignore
             | None ->
                 state.targets <-Some (Set.add target Set.empty)
-                insertInTargetedSearcher state target
+                targetedSearcher.Insert (state |> Seq.singleton) |> ignore
 
     let init states =
         baseSearcher.Init states

@@ -281,7 +281,7 @@ type public SILIStatistics(statsDumpIntervalMs : int) as this =
         for block in s.history do
             if block.BasicBlock.FinalOffset = block.offset
             then
-                block.method.SetBlockIsCoveredByTest block.offset |> ignore
+                block.method.SetBlockIsCoveredByTest(block.offset, entryMethodOf s)
 
                 if block.method.InCoverageZone then
                     isVisitedBlocksNotCoveredByTestsRelevant <- false

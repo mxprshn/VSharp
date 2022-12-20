@@ -175,8 +175,8 @@ type public SILI(options : SiliOptions) =
 
     let coveragePobsForMethod (method : Method) =
         let cfg = method.CFG
-        cfg.Sinks |> Seq.map (fun offset ->
-            {loc = {offset = offset; method = method}; lvl = infty; pc = EmptyPathCondition})
+        cfg.Sinks |> Seq.map (fun bb ->
+            {loc = {offset = bb.FinalOffset; method = method}; lvl = infty; pc = EmptyPathCondition})
         |> List.ofSeq
 
     member private x.Forward (s : cilState) =
