@@ -44,17 +44,17 @@ type SingleTargetSearcher(maxBound, target, isPaused) =
 
     member x.TargetedInsert states : cilState list =
         x.Insert states
-        states |> Seq.fold (fun reachedStates state ->
-        match x.TryGetWeight state with
-        | Some 0u -> state::reachedStates
-        | _ -> reachedStates) []
+        let reached = states |> Seq.fold (fun reachedStates state ->
+            if state.currentLoc = target then state::reachedStates else reachedStates) []
+        reached |> Seq.iter (x :> IForwardSearcher).Remove
+        reached
 
     member x.TargetedUpdate (parent, newStates) =
         x.Update (parent, newStates)
-        Seq.append [parent] newStates |> Seq.fold (fun reachedStates state ->
-        match x.TryGetWeight state with
-        | Some 0u -> state::reachedStates
-        | _ -> reachedStates) []
+        let reached = Seq.append [parent] newStates |> Seq.fold (fun reachedStates state ->
+            if state.currentLoc = target then state::reachedStates else reachedStates) []
+        reached |> Seq.iter (x :> IForwardSearcher).Remove
+        reached
 
 type ITargetCalculator =
     abstract member CalculateTarget : cilState -> codeLocation option

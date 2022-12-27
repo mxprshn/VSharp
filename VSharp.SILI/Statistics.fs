@@ -18,9 +18,9 @@ open CilStateOperations
 open IpOperations
 open CodeLocation
 
-type pob = {loc : codeLocation; lvl : uint; pc : pathCondition}
+type pob = {loc : codeLocation; lvl : uint; pc : pathCondition; ipStack : ipStack}
     with
-    override x.ToString() = $"loc = {x.loc}; lvl = %d{x.lvl}; pc = %s{Print.PrintPC x.pc}"
+    override x.ToString() = $"loc = {x.loc}; lvl = %d{x.lvl}; pc = %s{Print.PrintPC x.pc}; stack = {x.ipStack}"
 
 type pobStatus =
     | Unknown

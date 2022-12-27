@@ -176,7 +176,7 @@ type public SILI(options : SiliOptions) =
     let coveragePobsForMethod (method : Method) =
         let cfg = method.CFG
         cfg.Sinks |> Seq.map (fun bb ->
-            {loc = {offset = bb.FinalOffset; method = method}; lvl = infty; pc = EmptyPathCondition})
+            {loc = {offset = bb.FinalOffset; method = method}; lvl = infty; pc = EmptyPathCondition; ipStack = []})
         |> List.ofSeq
 
     member private x.Forward (s : cilState) =
@@ -223,7 +223,7 @@ type public SILI(options : SiliOptions) =
             | true when not <| isIsolated s' -> searcher.Answer p' (Witnessed s')
             | true ->
                 statistics.TrackStepBackward p' s'
-                let p = {loc = startingLoc s'; lvl = lvl; pc = pc}
+                let p = {loc = startingLoc s'; lvl = lvl; pc = pc; ipStack = p'.ipStack}
                 Logger.trace "Backward:\nWas: %O\nNow: %O\n\n" p' p
                 Application.addGoal p.loc
                 searcher.UpdatePobs p' p
@@ -291,7 +291,7 @@ type public SILI(options : SiliOptions) =
     member x.Reset entryMethods =
         API.Reset()
         SolverPool.reset()
-        stateInitializer.Reset()
+        //stateInitializer.Reset()
         statistics.Reset()
         searcher.Reset()
         isStopped <- false
