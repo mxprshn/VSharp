@@ -1,5 +1,6 @@
 namespace VSharp
 
+open System.Reflection
 open global.System
 open System.Reflection.Emit
 open VSharp
@@ -523,6 +524,141 @@ module EvaluationStackTyper =
         | evaluationStackCellType.R8 -> true
         | _ -> false
 
+    type StackType =
+        | Int32Type
+        | Int64Type
+        | NativeIntType
+        | FloatType
+        // bool is for Controlled mutability
+        | ManagedPointer of Type * bool
+        | ValueType of Type
+        | ObjectType of Type
+        | Boxed of StackType
+        | Null
+
+    // TODO: move somewhere
+    // Are generics properly considered?
+    let closestCommonSupertype (t1 : Type) (t2 : Type) : Type option =
+        let rec getOrderedSupertypes (typs : Type seq) : Type seq =
+            seq {
+                let supertypes t =
+                    if t <> typeof<obj> then
+                        let interfaces = t.GetInterfaces()
+                        if not t.IsInterface then
+                            Seq.cons t.BaseType interfaces
+                        else
+                            interfaces
+                    else
+                        Seq.empty
+                let supertypes = typs |> Seq.collect supertypes
+                yield! supertypes
+                yield! getOrderedSupertypes supertypes
+            }
+
+        Seq.singleton t1 |> getOrderedSupertypes |> Seq.tryFind (fun st -> st.IsAssignableFrom t2)
+
+    // Caching?
+    let rec reducedTypeOf (t : Type) =
+        match () with
+        | _ when t.IsEnum -> t.GetEnumUnderlyingType() |> reducedTypeOf
+        | _ when t = typeof<uint8> -> typeof<int8>
+        | _ when t = typeof<uint16> -> typeof<int16>
+        | _ when t = typeof<uint32> -> typeof<int32>
+        | _ when t = typeof<uint64> -> typeof<int64>
+        | _ when t = typeof<unativeint> -> typeof<nativeint>
+        | _ -> t
+
+    // Caching?
+    let rec stackTypeOf (t : Type) =
+        match () with
+        | _ when t.IsByRef ->
+            ManagedPointer(t.GetElementType() |> reducedTypeOf, false)
+        | _ when t.IsClass || t.IsInterface ->
+            ObjectType t
+        | _ when t.IsValueType && not <| t.IsPrimitive ->
+            ValueType t
+        | _ ->
+            let reducedType = reducedTypeOf t
+            match () with
+            | _ when reducedType = typeof<bool> ||
+                     reducedType = typeof<int8> ||
+                     reducedType = typeof<char> ||
+                     reducedType = typeof<int16> ||
+                     reducedType = typeof<int32> -> Int32Type
+            | _ when reducedType = typeof<int64> -> Int64Type
+            | _ when reducedType = typeof<nativeint> -> NativeIntType
+            | _ when reducedType = typeof<float32> ||
+                     reducedType = typeof<double> -> FloatType
+            | _ -> __unreachable__()
+
+    let implementsInterface (t1 : Type) (t2 : Type) =
+        t1.GetInterfaces() |> Seq.exists (fun i -> i = t2)
+
+    // ECMA-335, p. 37
+    let rec private isCompatibleWith (t1 : Type) (t2 : Type) =
+        match () with
+        // Transitivity?
+        | _ when t1 = t2 -> true
+        | _ when t1.IsSubclassOf t2 || implementsInterface t1 t2 -> true
+        | _ when t1.IsArray && t2.IsArray ->
+            t1.GetArrayRank() = t2.GetArrayRank() &&
+            isArrayElementCompatible (t1.GetElementType()) (t2.GetElementType())
+        // There is also a point about array and IList<> -- what is it?
+        // Why it should be an interface? Don't we need to deal with delegates
+        | _ when t1.IsConstructedGenericType && t2.IsConstructedGenericType &&
+                 t1.IsInterface &&
+                 t1.GetGenericTypeDefinition() = t2.GetGenericTypeDefinition() ->
+            let args1 = t1.GetGenericArguments()
+            let args2 = t2.GetGenericArguments()
+            t1.GetGenericTypeDefinition().GetGenericArguments() |> Seq.indexed |> Seq.forall (fun (i, p) ->
+                    let attributes = p.GenericParameterAttributes
+                    match () with
+                    | _ when attributes &&& GenericParameterAttributes.VarianceMask = GenericParameterAttributes.None ->
+                        args1[i] = args2[i]
+                    | _ when attributes &&& GenericParameterAttributes.Covariant <> GenericParameterAttributes.None ->
+                        isCompatibleWith args1[i] args2[i]
+                    | _ when attributes &&& GenericParameterAttributes.Contravariant <> GenericParameterAttributes.None ->
+                        isCompatibleWith args2[i] args1[i]
+                    | _ -> false
+                )
+        | _ -> false
+    and isArrayElementCompatible t1 t2 =
+        isCompatibleWith t1 t2 || reducedTypeOf t1 = reducedTypeOf t2
+
+    // Cache?
+    let private isVerifierAssignableTo (t1 : StackType) (t2 : StackType) =
+        match t1, t2 with
+        | _ when t1 = t2 -> true
+        | ObjectType t1, ObjectType t2 ->
+            isCompatibleWith t1 t2
+        | ManagedPointer(t1, false), ManagedPointer(t2, false)
+        | ManagedPointer(t1, true), ManagedPointer(t2, true)
+        | ManagedPointer(t1, false), ManagedPointer(t2, true) ->
+            t1 = t2
+        | ManagedPointer _, _
+        | _, ManagedPointer _ -> false
+        | Null, ObjectType _ -> true
+        | Boxed t1, ObjectType t2 ->
+            assert(t2.IsClass || t2.IsInterface)
+            match t1 with
+            | ObjectType t1 ->
+                assert(t1.IsClass || t1.IsInterface)
+                t1.IsSubclassOf t2 || implementsInterface t1 t2
+            | _ -> false
+        | NativeIntType, Int32Type
+        | Int32Type, NativeIntType -> true
+        | _ -> false
+
+    let mergeStackElements e1 e2 =
+        match e1, e2 with
+        | _ when isVerifierAssignableTo e1 e2 -> e2
+        | _ when isVerifierAssignableTo e2 e1 -> e1
+        | ObjectType t1, ObjectType t2 ->
+            match closestCommonSupertype t1 t2 with
+            | Some t -> ObjectType t
+            | None -> fail()
+        | _ -> fail()
+
     let mergeAbstraction a1 a2 =
         if a1 = a2 then a1
         elif isI4 a1 && isI4 a2 then evaluationStackCellType.I4
@@ -583,31 +719,6 @@ module EvaluationStackTyper =
         let _, s = Stack.pop s
         let t2, s = Stack.pop s
         Stack.push s t2
-
-//    let REMOVE_ME (m : Reflection.MethodBase) (instr : ilInstr) =
-//        let instr, arg =
-//            match instr.opcode with
-//            | OpCode op ->
-//                let arg =
-//                    if op = OpCodes.Call || op = OpCodes.Callvirt || op = OpCodes.Newobj then
-//                        match instr.arg with
-//                        | Arg32 token ->
-//                            let callee = Reflection.resolveMethod m token
-//                            Reflection.methodToString callee
-//                        | _ -> __unreachable__()
-//                    else
-//                        match instr.arg with
-//                        | NoArg -> ""
-//                        | Arg8 a -> a.ToString()
-//                        | Arg16 a -> a.ToString()
-//                        | Arg32 a -> a.ToString()
-//                        | Target t ->
-//                            match t.opcode with
-//                            | OpCode op -> op.Name
-//                            | SwitchArg _ -> "<SwitchArg>"
-//                op.Name, arg
-//            | SwitchArg -> "<SwitchArg>", ""
-//        instr + " " + arg
 
     let typeInstruction (m : Reflection.MethodBase) (instr : ilInstr) =
         let s =
