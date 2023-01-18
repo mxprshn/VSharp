@@ -110,6 +110,10 @@ module public Reflection =
         | :? MethodInfo as m -> m.ReturnType
         | _ -> internalfail "unknown MethodBase"
 
+    let getConstructedType : MethodBase -> Type = function
+        | :? ConstructorInfo as ctor -> ctor.DeclaringType
+        | _ -> internalfail "Cannot get constructed type from method which is not a constructor"
+
     let hasNonVoidResult m = (getMethodReturnType m).FullName <> typeof<Void>.FullName
 
     let hasThis (m : MethodBase) = m.CallingConvention.HasFlag(CallingConventions.HasThis)

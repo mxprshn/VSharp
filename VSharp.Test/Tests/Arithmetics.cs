@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using NUnit.Framework;
 using VSharp.Test;
 
@@ -332,6 +333,18 @@ namespace IntegrationTests
     [TestSvmFixture]
     public sealed class Arithmetics
     {
+        public static void F(object[] l)
+        {
+            l[0] = 42;
+        }
+
+        [Test]
+        public static void Test()
+        {
+            var s = new string[45];
+            F(s);
+        }
+
         // 7 + n
         [Ignore("Exceptions handling")]
         public static int ArithmeticsMethod1(int n, int m)

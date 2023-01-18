@@ -1,6 +1,8 @@
 namespace VSharp
 
+open System.Collections.Generic
 open System.Reflection
+open Microsoft.FSharp.Core
 open global.System
 open System.Reflection.Emit
 open VSharp
@@ -343,19 +345,97 @@ type instrumentedMethodBody = {
     ehs : rawExceptionHandler array
 }
 
+type stackType =
+    | Int8Type
+    | Int16Type
+    | Int32Typ
+    | Int64Type
+    | NativeIntType
+    | Float32Type
+    | Float64Type
+    // bool is for Controlled mutability
+    | ManagedPointer of Type * bool
+    | ValueType of Type
+    | ObjectType of Type
+    | Boxed of stackType
+    | NullType
+    | TypedReference
 
-type evaluationStackCellType =
-    | I1 = 1
-    | I2 = 2
-    | I4 = 3
-    | I8 = 4
-    | R4 = 5
-    | R8 = 6
-    | I = 7
-    | Ref = 8
-    | Struct = 9
+module StackType =
 
-type stackState = evaluationStackCellType stack
+    let (|IntermediateInt32|_|) typ =
+        match typ with
+        | Int8Type
+        | Int16Type
+        | Int32Typ -> Some IntermediateInt32
+        | _ -> None
+
+    let (|IntermediateFloat|_|) typ =
+        match typ with
+        | Float32Type
+        | Float64Type -> Some IntermediateFloat
+        | _ -> None
+
+    let (|IntermediatePointer|_|) typ =
+        match typ with
+        | NativeIntType
+        | ManagedPointer _ -> Some IntermediatePointer
+        | _ -> None
+
+    let (|IntermediateObj|_|) typ =
+        match typ with
+        | NullType
+        | ObjectType _ -> Some IntermediateObj
+        | _ -> None
+
+    let (|ArrayType|_|) (typ : Type) =
+        if typ.IsArray then Some ArrayType else None
+
+    // Caching?
+    let rec reducedTypeOf (t : Type) =
+        match () with
+        | _ when t.IsEnum -> t.GetEnumUnderlyingType() |> reducedTypeOf
+        | _ when t = typeof<uint8> -> typeof<int8>
+        | _ when t = typeof<uint16> -> typeof<int16>
+        | _ when t = typeof<uint32> -> typeof<int32>
+        | _ when t = typeof<uint64> -> typeof<int64>
+        | _ when t = typeof<unativeint> -> typeof<nativeint>
+        | _ -> t
+
+    let rec transientTypeOf (t : stackType) =
+        match t with
+        | IntermediateInt32 -> Int32Typ
+        | IntermediateFloat -> Float64Type
+        | _ -> t
+    let isReferenceType (t : Type) =
+        assert not t.IsPointer
+        t.IsClass || t.IsInterface
+
+    let isStruct (t : Type) = t.IsValueType && not t.IsPrimitive && not t.IsEnum
+
+    // Caching?
+    let rec stackTypeOf (t : Type) =
+        match () with
+        | _ when t.IsByRef ->
+            ManagedPointer(t.GetElementType() |> reducedTypeOf, false)
+        | _ when t.IsPointer -> NativeIntType
+        | _ when isReferenceType t -> ObjectType t
+        | _ when isStruct t  -> ValueType t
+        | _ ->
+            let reducedType = reducedTypeOf t
+            match () with
+            | _ when reducedType = typeof<bool> ||
+                     reducedType = typeof<int8> -> Int8Type
+            | _ when reducedType = typeof<char> ||
+                     reducedType = typeof<int16> -> Int16Type
+            | _ when reducedType = typeof<int32> -> Int32Typ
+            | _ when reducedType = typeof<int64> -> Int64Type
+            | _ when reducedType = typeof<nativeint> -> NativeIntType
+            | _ when reducedType = typeof<float32> -> Float32Type
+            | _ when reducedType = typeof<double> -> Float64Type
+            | _ -> __unreachable__()
+
+type stackState = stackType stack
 
 type opcode =
     | OpCode of OpCode
@@ -478,63 +558,9 @@ module NumberCreator =
         BitConverter.ToSingle(ilBytes, int pos)
 
 module EvaluationStackTyper =
+    open StackType
 
     let fail() = internalfail "Stack typer validation failed!"
-
-    let typeAbstraction =
-        let result = System.Collections.Generic.Dictionary<int32 *int32, evaluationStackCellType>()
-        result.Add((typeof<int8>.Module.MetadataToken, typeof<int8>.MetadataToken), evaluationStackCellType.I1)
-        result.Add((typeof<uint8>.Module.MetadataToken, typeof<uint8>.MetadataToken), evaluationStackCellType.I1)
-        result.Add((typeof<char>.Module.MetadataToken, typeof<char>.MetadataToken), evaluationStackCellType.I2)
-        result.Add((typeof<bool>.Module.MetadataToken, typeof<bool>.MetadataToken), evaluationStackCellType.I1)
-        result.Add((typeof<int16>.Module.MetadataToken, typeof<int16>.MetadataToken), evaluationStackCellType.I2)
-        result.Add((typeof<uint16>.Module.MetadataToken, typeof<uint16>.MetadataToken), evaluationStackCellType.I2)
-        result.Add((typeof<int32>.Module.MetadataToken, typeof<int32>.MetadataToken), evaluationStackCellType.I4)
-        result.Add((typeof<uint32>.Module.MetadataToken, typeof<uint32>.MetadataToken), evaluationStackCellType.I4)
-        result.Add((typeof<int64>.Module.MetadataToken, typeof<int64>.MetadataToken), evaluationStackCellType.I8)
-        result.Add((typeof<uint64>.Module.MetadataToken, typeof<uint64>.MetadataToken), evaluationStackCellType.I8)
-        result.Add((typeof<float32>.Module.MetadataToken, typeof<float32>.MetadataToken), evaluationStackCellType.R4)
-        result.Add((typeof<double>.Module.MetadataToken, typeof<double>.MetadataToken), evaluationStackCellType.R8)
-        result.Add((typeof<IntPtr>.Module.MetadataToken, typeof<IntPtr>.MetadataToken), evaluationStackCellType.I)
-        result.Add((typeof<UIntPtr>.Module.MetadataToken, typeof<UIntPtr>.MetadataToken), evaluationStackCellType.I)
-        result
-
-    let abstractType (typ : Type) =
-        if typ.IsValueType then
-            let typ = if typ.IsEnum then EnumUtils.getEnumUnderlyingTypeChecked typ else typ
-            let result = ref evaluationStackCellType.I1
-            if typeAbstraction.TryGetValue((typ.Module.MetadataToken, typ.MetadataToken), result) then result.Value
-            else evaluationStackCellType.Struct
-        else evaluationStackCellType.Ref
-
-    let push (s : stackState) = abstractType >> Stack.push s
-
-    let take (s : stackState) count =
-        if Stack.size s < count then fail()
-        Seq.take count s |> Seq.rev |> List.ofSeq
-
-    let isI4 = function
-        | evaluationStackCellType.I1
-        | evaluationStackCellType.I2
-        | evaluationStackCellType.I4 -> true
-        | _ -> false
-
-    let isFloat = function
-        | evaluationStackCellType.R4
-        | evaluationStackCellType.R8 -> true
-        | _ -> false
-
-    type StackType =
-        | Int32Type
-        | Int64Type
-        | NativeIntType
-        | FloatType
-        // bool is for Controlled mutability
-        | ManagedPointer of Type * bool
-        | ValueType of Type
-        | ObjectType of Type
-        | Boxed of StackType
-        | Null
 
     // TODO: move somewhere
     // Are generics properly considered?
@@ -542,10 +568,11 @@ module EvaluationStackTyper =
         let rec getOrderedSupertypes (typs : Type seq) : Type seq =
             seq {
                 let supertypes t =
+                    // TODO: give more priority to generic interfaces?
                     if t <> typeof<obj> then
                         let interfaces = t.GetInterfaces()
                         if not t.IsInterface then
-                            Seq.cons t.BaseType interfaces
+                            Seq.append interfaces (Seq.singleton t.BaseType)
                         else
                             interfaces
                     else
@@ -557,40 +584,6 @@ module EvaluationStackTyper =
 
         Seq.singleton t1 |> getOrderedSupertypes |> Seq.tryFind (fun st -> st.IsAssignableFrom t2)
 
-    // Caching?
-    let rec reducedTypeOf (t : Type) =
-        match () with
-        | _ when t.IsEnum -> t.GetEnumUnderlyingType() |> reducedTypeOf
-        | _ when t = typeof<uint8> -> typeof<int8>
-        | _ when t = typeof<uint16> -> typeof<int16>
-        | _ when t = typeof<uint32> -> typeof<int32>
-        | _ when t = typeof<uint64> -> typeof<int64>
-        | _ when t = typeof<unativeint> -> typeof<nativeint>
-        | _ -> t
-
-    // Caching?
-    let rec stackTypeOf (t : Type) =
-        match () with
-        | _ when t.IsByRef ->
-            ManagedPointer(t.GetElementType() |> reducedTypeOf, false)
-        | _ when t.IsClass || t.IsInterface ->
-            ObjectType t
-        | _ when t.IsValueType && not <| t.IsPrimitive ->
-            ValueType t
-        | _ ->
-            let reducedType = reducedTypeOf t
-            match () with
-            | _ when reducedType = typeof<bool> ||
-                     reducedType = typeof<int8> ||
-                     reducedType = typeof<char> ||
-                     reducedType = typeof<int16> ||
-                     reducedType = typeof<int32> -> Int32Type
-            | _ when reducedType = typeof<int64> -> Int64Type
-            | _ when reducedType = typeof<nativeint> -> NativeIntType
-            | _ when reducedType = typeof<float32> ||
-                     reducedType = typeof<double> -> FloatType
-            | _ -> __unreachable__()
-
     let implementsInterface (t1 : Type) (t2 : Type) =
         t1.GetInterfaces() |> Seq.exists (fun i -> i = t2)
 
@@ -599,12 +592,13 @@ module EvaluationStackTyper =
         match () with
         // Transitivity?
         | _ when t1 = t2 -> true
-        | _ when t1.IsSubclassOf t2 || implementsInterface t1 t2 -> true
+        // Replace with IsAssignableFrom for transitivity?
+        | _ when t2.IsAssignableFrom t1 -> true
         | _ when t1.IsArray && t2.IsArray ->
             t1.GetArrayRank() = t2.GetArrayRank() &&
             isArrayElementCompatible (t1.GetElementType()) (t2.GetElementType())
-        // There is also a point about array and IList<> -- what is it?
-        // Why it should be an interface? Don't we need to deal with delegates
+        | _ when t1.IsSZArray && t2.IsConstructedGenericType && t2.GetGenericTypeDefinition() = typeof<IList<_>> ->
+            isArrayElementCompatible (t1.GetElementType()) (t2.GetGenericArguments()[0])
         | _ when t1.IsConstructedGenericType && t2.IsConstructedGenericType &&
                  t1.IsInterface &&
                  t1.GetGenericTypeDefinition() = t2.GetGenericTypeDefinition() ->
@@ -626,9 +620,9 @@ module EvaluationStackTyper =
         isCompatibleWith t1 t2 || reducedTypeOf t1 = reducedTypeOf t2
 
     // Cache?
-    let private isVerifierAssignableTo (t1 : StackType) (t2 : StackType) =
+    let private isVerifierAssignableTo (t1 : stackType) (t2 : stackType) =
         match t1, t2 with
-        | _ when t1 = t2 -> true
+        | _ when transientTypeOf t1 = transientTypeOf t2 -> true
         | ObjectType t1, ObjectType t2 ->
             isCompatibleWith t1 t2
         | ManagedPointer(t1, false), ManagedPointer(t2, false)
@@ -637,17 +631,23 @@ module EvaluationStackTyper =
             t1 = t2
         | ManagedPointer _, _
         | _, ManagedPointer _ -> false
-        | Null, ObjectType _ -> true
+        | NullType, ObjectType _ -> true
         | Boxed t1, ObjectType t2 ->
-            assert(t2.IsClass || t2.IsInterface)
+            assert isReferenceType t2
             match t1 with
             | ObjectType t1 ->
-                assert(t1.IsClass || t1.IsInterface)
+                assert isReferenceType t1
                 t1.IsSubclassOf t2 || implementsInterface t1 t2
             | _ -> false
-        | NativeIntType, Int32Type
-        | Int32Type, NativeIntType -> true
+        | NativeIntType, IntermediateInt32 -> true
+        | IntermediateInt32, NativeIntType -> true
         | _ -> false
+
+    let push (s : stackState) = stackTypeOf >> Stack.push s
+
+    let take (s : stackState) count =
+        if Stack.size s < count then fail()
+        Seq.take count s |> Seq.rev |> List.ofSeq
 
     let mergeStackElements e1 e2 =
         match e1, e2 with
@@ -659,18 +659,12 @@ module EvaluationStackTyper =
             | None -> fail()
         | _ -> fail()
 
-    let mergeAbstraction a1 a2 =
-        if a1 = a2 then a1
-        elif isI4 a1 && isI4 a2 then evaluationStackCellType.I4
-        elif isFloat a1 && isFloat a2 then evaluationStackCellType.R8
-        else fail()
-
-    let mergeStackStates s1 s2 = List.map2 mergeAbstraction s1 s2
+    let mergeStackStates s1 s2 = List.map2 mergeStackElements s1 s2
 
     let typeLdarg (m : Reflection.MethodBase) (s : stackState) idx =
         let hasThis = m.CallingConvention.HasFlag(System.Reflection.CallingConventions.HasThis)
         if hasThis && idx = 0 then
-            Stack.push s evaluationStackCellType.Ref
+            push s m.DeclaringType
         else
             let idx = if hasThis then idx - 1 else idx
             m.GetParameters().[idx].ParameterType |> push s
@@ -682,53 +676,40 @@ module EvaluationStackTyper =
         // See ECMA-335, sec. III.1.5
         let t1, s = Stack.pop s
         let t2, s = Stack.pop s
-        let t1_is_I4 =
-            match t1 with
-            | evaluationStackCellType.I1
-            | evaluationStackCellType.I2
-            | evaluationStackCellType.I4 -> true
-            | _ -> false
-        let t2_is_I4 =
-            match t2 with
-            | evaluationStackCellType.I1
-            | evaluationStackCellType.I2
-            | evaluationStackCellType.I4 -> true
-            | _ -> false
-        let t1_is_F =
-            match t1 with
-            | evaluationStackCellType.R4
-            | evaluationStackCellType.R8 -> true
-            | _ -> false
-        let t2_is_F =
-            match t2 with
-            | evaluationStackCellType.R4
-            | evaluationStackCellType.R8 -> true
-            | _ -> false
-        if t1_is_I4 && t2_is_I4 then
-            if t1 = t2 then t1 else evaluationStackCellType.I4
-        elif t1 = evaluationStackCellType.I8 && t2 = evaluationStackCellType.I8 then evaluationStackCellType.I8
-        elif t1_is_F && t2_is_F then
-            if t1 = t2 then t1 else evaluationStackCellType.R8
-        elif t1 = evaluationStackCellType.I || t1 = evaluationStackCellType.Ref then t1
-        elif t2 = evaluationStackCellType.I || t2 = evaluationStackCellType.Ref then t2
-        else fail()
+        match t1, t2 with
+        | IntermediateInt32, IntermediateInt32 when t1 = t2 -> t1
+        | IntermediateInt32, IntermediateInt32 -> Int32Typ
+        | IntermediateFloat, IntermediateFloat when t1 = t2 -> t1
+        | IntermediateFloat, IntermediateFloat -> Float64Type
+        | Int64Type, Int64Type -> Int64Type
+        | NativeIntType, NativeIntType
+        | NativeIntType, IntermediateInt32
+        | IntermediateInt32, NativeIntType -> NativeIntType
+        | _ -> fail()
         |> Stack.push s
+
     let typeShiftOp (s : stackState) =
-        // TODO: implement fully #do
         // See ECMA-335, sec. III.1.5, table III.6
-        let _, s = Stack.pop s
-        let t2, s = Stack.pop s
-        Stack.push s t2
+        let shiftBy, s = Stack.pop s
+        let toShift, s = Stack.pop s
+        match toShift, shiftBy with
+        | IntermediateInt32, IntermediateInt32
+        | IntermediateInt32, NativeIntType
+        | Int64Type, IntermediateInt32
+        | Int64Type, NativeIntType
+        | NativeIntType, IntermediateInt32
+        | NativeIntType, NativeIntType -> toShift
+        | _ -> fail()
+        |> Stack.push s
 
     let typeInstruction (m : Reflection.MethodBase) (instr : ilInstr) =
         let s =
             match instr.stackState with
             | Some s -> s
             | None -> fail()
-//       let res =
+
         match instr.opcode with
         | OpCode op ->
-//            Logger.trace "typer before: [%O] %O: %O" instr.offset (REMOVE_ME m instr) s.Length
             let opcodeValue = LanguagePrimitives.EnumOfValue op.Value
             match opcodeValue with
             | OpCodeValues.Ldarg_0 -> typeLdarg m s 0
@@ -747,7 +728,7 @@ module EvaluationStackTyper =
             | OpCodeValues.Ldarga_S
             | OpCodeValues.Ldloca_S
             | OpCodeValues.Ldarga
-            | OpCodeValues.Ldloca -> Stack.push s evaluationStackCellType.I
+            | OpCodeValues.Ldloca -> Stack.push s NativeIntType
 
             | OpCodeValues.Stloc_0
             | OpCodeValues.Stloc_1
@@ -798,25 +779,43 @@ module EvaluationStackTyper =
             | OpCodeValues.Ldc_I4_7
             | OpCodeValues.Ldc_I4_8
             | OpCodeValues.Ldc_I4_S
-            | OpCodeValues.Ldc_I4 -> Stack.push s evaluationStackCellType.I4
-            | OpCodeValues.Ldc_I8 -> Stack.push s evaluationStackCellType.I8
-            | OpCodeValues.Ldc_R4 -> Stack.push s evaluationStackCellType.R4
-            | OpCodeValues.Ldc_R8 -> Stack.push s evaluationStackCellType.R8
-            | OpCodeValues.Ldnull -> Stack.push s evaluationStackCellType.Ref
+            | OpCodeValues.Ldc_I4 -> Stack.push s Int32Typ
+            | OpCodeValues.Ldc_I8 -> Stack.push s Int64Type
+            | OpCodeValues.Ldc_R4 -> Stack.push s Float32Type
+            | OpCodeValues.Ldc_R8 -> Stack.push s Float64Type
+            | OpCodeValues.Ldnull -> Stack.push s NullType
 
             | OpCodeValues.Dup -> Stack.dup s
 
             | OpCodeValues.Ldind_I1
-            | OpCodeValues.Ldind_U1 -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I1
+            | OpCodeValues.Ldind_U1 -> Stack.push (Stack.drop 1 s) Int8Type
             | OpCodeValues.Ldind_I2
-            | OpCodeValues.Ldind_U2 -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I2
+            | OpCodeValues.Ldind_U2 -> Stack.push (Stack.drop 1 s) Int16Type
             | OpCodeValues.Ldind_I4
-            | OpCodeValues.Ldind_U4 -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I4
-            | OpCodeValues.Ldind_I8 -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I8
-            | OpCodeValues.Ldind_I -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I
-            | OpCodeValues.Ldind_R4 -> Stack.push (Stack.drop 1 s) evaluationStackCellType.R4
-            | OpCodeValues.Ldind_R8 -> Stack.push (Stack.drop 1 s) evaluationStackCellType.R8
-            | OpCodeValues.Ldind_Ref -> Stack.push (Stack.drop 1 s) evaluationStackCellType.Ref
+            | OpCodeValues.Ldind_U4 -> Stack.push (Stack.drop 1 s) Int32Typ
+            | OpCodeValues.Ldind_I8 -> Stack.push (Stack.drop 1 s) Int64Type
+            | OpCodeValues.Ldind_I -> Stack.push (Stack.drop 1 s) NativeIntType
+            | OpCodeValues.Ldind_R4 -> Stack.push (Stack.drop 1 s) Float32Type
+            | OpCodeValues.Ldind_R8 -> Stack.push (Stack.drop 1 s) Float64Type
+
+            | OpCodeValues.Ldind_Ref ->
+                // ECMA p. 368
+                // Verifiability:
+                // For ldind.ref addr shall be a managed pointer, T&, T shall be a reference type, and verification
+                // tracks the type of the result value as the verification type of T .
+                let pointer, s = Stack.pop s
+                let typ =
+                    match pointer with
+                    | ManagedPointer(typ, _) ->
+                        if not typ.IsClass && not typ.IsInterface then
+                            fail()
+                        else
+                            typ
+                    // So, this case is not likely to appear in verified IL
+                    | NativeIntType -> typeof<obj>
+                    | _ -> fail()
+                ObjectType typ |> Stack.push s
+
             | OpCodeValues.Stind_Ref
             | OpCodeValues.Stind_I1
             | OpCodeValues.Stind_I2
@@ -850,45 +849,61 @@ module EvaluationStackTyper =
             | OpCodeValues.Cgt
             | OpCodeValues.Cgt_Un
             | OpCodeValues.Clt
-            | OpCodeValues.Clt_Un -> Stack.push (Stack.drop 2 s) evaluationStackCellType.I4
+            | OpCodeValues.Clt_Un -> Stack.push (Stack.drop 2 s) Int32Typ
 
             | OpCodeValues.Conv_I1
             | OpCodeValues.Conv_U1
             | OpCodeValues.Conv_Ovf_I1
             | OpCodeValues.Conv_Ovf_U1
             | OpCodeValues.Conv_Ovf_I1_Un
-            | OpCodeValues.Conv_Ovf_U1_Un -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I1
+            | OpCodeValues.Conv_Ovf_U1_Un -> Stack.push (Stack.drop 1 s) Int8Type
             | OpCodeValues.Conv_I2
             | OpCodeValues.Conv_U2
             | OpCodeValues.Conv_Ovf_I2
             | OpCodeValues.Conv_Ovf_U2
             | OpCodeValues.Conv_Ovf_U2_Un
-            | OpCodeValues.Conv_Ovf_I2_Un -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I2
+            | OpCodeValues.Conv_Ovf_I2_Un -> Stack.push (Stack.drop 1 s) Int16Type
             | OpCodeValues.Conv_I4
             | OpCodeValues.Conv_U4
             | OpCodeValues.Conv_Ovf_I4
             | OpCodeValues.Conv_Ovf_U4
             | OpCodeValues.Conv_Ovf_I4_Un
-            | OpCodeValues.Conv_Ovf_U4_Un -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I4
+            | OpCodeValues.Conv_Ovf_U4_Un -> Stack.push (Stack.drop 1 s) Int32Typ
             | OpCodeValues.Conv_I8
             | OpCodeValues.Conv_U8
             | OpCodeValues.Conv_Ovf_I8
             | OpCodeValues.Conv_Ovf_U8
             | OpCodeValues.Conv_Ovf_I8_Un
-            | OpCodeValues.Conv_Ovf_U8_Un -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I8
-            | OpCodeValues.Conv_R4 -> Stack.push (Stack.drop 1 s) evaluationStackCellType.R4
+            | OpCodeValues.Conv_Ovf_U8_Un -> Stack.push (Stack.drop 1 s) Int64Type
+            | OpCodeValues.Conv_R4 -> Stack.push (Stack.drop 1 s) Float32Type
             | OpCodeValues.Conv_R8
-            | OpCodeValues.Conv_R_Un -> Stack.push (Stack.drop 1 s) evaluationStackCellType.R8
+            | OpCodeValues.Conv_R_Un -> Stack.push (Stack.drop 1 s) Float64Type
             | OpCodeValues.Conv_I
             | OpCodeValues.Conv_U
             | OpCodeValues.Conv_Ovf_I
             | OpCodeValues.Conv_Ovf_U
             | OpCodeValues.Conv_Ovf_I_Un
-            | OpCodeValues.Conv_Ovf_U_Un -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I
+            | OpCodeValues.Conv_Ovf_U_Un -> Stack.push (Stack.drop 1 s) NativeIntType
 
-            | OpCodeValues.Ldobj -> Stack.push (Stack.drop 1 s) evaluationStackCellType.Struct
-            | OpCodeValues.Ldstr -> Stack.push s evaluationStackCellType.Ref
-            | OpCodeValues.Unbox -> Stack.push s evaluationStackCellType.I
+            | OpCodeValues.Ldobj ->
+                let typ = Reflection.resolveType m instr.Arg32
+                push (Stack.drop 1 s) typ
+
+            | OpCodeValues.Ldstr -> ObjectType typeof<string> |> Stack.push s
+
+            | OpCodeValues.Unbox ->
+                // ECMA p. 431
+                // The unbox instruction converts obj (of type O), the boxed representation of a value type, to
+                // valueTypePtr (a controlled-mutability managed pointer, type &), its unboxed
+                // form. valuetype is a metadata token (a typeref, typedef or typespec). The type of valuetype
+                // contained within obj must be verifier-assignable-to valuetype.
+                let boxedType = Reflection.resolveType m instr.Arg32
+                if not boxedType.IsValueType then
+                    // TODO: replace with assert?
+                    fail()
+                else
+                    ManagedPointer(boxedType, true) |> Stack.push (Stack.drop 1 s)
+
             | OpCodeValues.Throw
             | OpCodeValues.Leave_S
             | OpCodeValues.Leave -> Stack.empty
@@ -896,13 +911,14 @@ module EvaluationStackTyper =
             | OpCodeValues.Ldsfld ->
                 let fieldInfo = Reflection.resolveField m instr.Arg32
                 fieldInfo.FieldType |> push s
+
             | OpCodeValues.Ldfld ->
                 let s = Stack.drop 1 s
                 let fieldInfo = Reflection.resolveField m instr.Arg32
                 fieldInfo.FieldType |> push s
 
-            | OpCodeValues.Ldflda -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I
-            | OpCodeValues.Ldsflda -> Stack.push s evaluationStackCellType.I
+            | OpCodeValues.Ldflda -> Stack.push (Stack.drop 1 s) NativeIntType
+            | OpCodeValues.Ldsflda -> Stack.push s NativeIntType
 
             | OpCodeValues.Stfld -> Stack.drop 2 s
             | OpCodeValues.Stsfld -> Stack.drop 1 s
@@ -911,21 +927,41 @@ module EvaluationStackTyper =
                 let s = Stack.drop 1 s
                 Reflection.resolveType m instr.Arg32 |> push s
             | OpCodeValues.Box
-            | OpCodeValues.Newarr -> Stack.push (Stack.drop 1 s) evaluationStackCellType.Ref
-            | OpCodeValues.Ldlen -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I
 
-            | OpCodeValues.Ldelema -> Stack.push (Stack.drop 2 s) evaluationStackCellType.I
+            | OpCodeValues.Newarr ->
+                let eType = Reflection.resolveType m instr.Arg32
+                eType.MakeArrayType() |> ObjectType |> Stack.push (Stack.drop 1 s)
+
+            | OpCodeValues.Ldlen -> Stack.push (Stack.drop 1 s) NativeIntType
+
+            | OpCodeValues.Ldelema -> Stack.push (Stack.drop 2 s) NativeIntType
             | OpCodeValues.Ldelem_I1
-            | OpCodeValues.Ldelem_U1 -> Stack.push (Stack.drop 2 s) evaluationStackCellType.I1
+            | OpCodeValues.Ldelem_U1 -> Stack.push (Stack.drop 2 s) Int8Type
             | OpCodeValues.Ldelem_I2
-            | OpCodeValues.Ldelem_U2 -> Stack.push (Stack.drop 2 s) evaluationStackCellType.I2
+            | OpCodeValues.Ldelem_U2 -> Stack.push (Stack.drop 2 s) Int16Type
             | OpCodeValues.Ldelem_I4
-            | OpCodeValues.Ldelem_U4 -> Stack.push (Stack.drop 2 s) evaluationStackCellType.I4
-            | OpCodeValues.Ldelem_I8 -> Stack.push (Stack.drop 2 s) evaluationStackCellType.I8
-            | OpCodeValues.Ldelem_I -> Stack.push (Stack.drop 2 s) evaluationStackCellType.I
-            | OpCodeValues.Ldelem_R4 -> Stack.push (Stack.drop 2 s) evaluationStackCellType.R4
-            | OpCodeValues.Ldelem_R8 -> Stack.push (Stack.drop 2 s) evaluationStackCellType.R8
-            | OpCodeValues.Ldelem_Ref -> Stack.push (Stack.drop 2 s) evaluationStackCellType.Ref
+            | OpCodeValues.Ldelem_U4 -> Stack.push (Stack.drop 2 s) Int32Typ
+            | OpCodeValues.Ldelem_I8 -> Stack.push (Stack.drop 2 s) Int64Type
+            | OpCodeValues.Ldelem_I -> Stack.push (Stack.drop 2 s) NativeIntType
+            | OpCodeValues.Ldelem_R4 -> Stack.push (Stack.drop 2 s) Float32Type
+            | OpCodeValues.Ldelem_R8 -> Stack.push (Stack.drop 2 s) Float64Type
+
+            | OpCodeValues.Ldelem_Ref ->
+                // Drop index
+                let s = Stack.drop 1 s
+
+                let arrayType, s = Stack.pop s
+
+                let eType =
+                    match arrayType with
+                    | ObjectType typ when typ.IsArray ->
+                        let eType = typ.GetElementType()
+                        if not <| isReferenceType eType then fail()
+                        eType
+                    | _ -> fail()
+
+                ObjectType eType |> Stack.push s
+
             | OpCodeValues.Ldelem ->
                 let s = Stack.drop 2 s
                 Reflection.resolveType m instr.Arg32 |> push s
@@ -941,17 +977,21 @@ module EvaluationStackTyper =
             | OpCodeValues.Stelem -> Stack.drop 3 s
 
             | OpCodeValues.Refanyval
-            | OpCodeValues.Ldvirtftn -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I
-            | OpCodeValues.Mkrefany -> Stack.push (Stack.drop 1 s) evaluationStackCellType.Ref
+            | OpCodeValues.Ldvirtftn -> Stack.push (Stack.drop 1 s) NativeIntType
+
+            | OpCodeValues.Mkrefany ->
+                // Is this correct?
+                TypedReference |> Stack.push (Stack.drop 1 s)
+
             | OpCodeValues.Ldtoken
             | OpCodeValues.Arglist
-            | OpCodeValues.Ldftn -> Stack.push s evaluationStackCellType.I
-            | OpCodeValues.Localloc -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I
+            | OpCodeValues.Ldftn -> Stack.push s NativeIntType
+            | OpCodeValues.Localloc -> Stack.push (Stack.drop 1 s) NativeIntType
             | OpCodeValues.Initobj -> Stack.drop 1 s
             | OpCodeValues.Cpblk -> Stack.drop 3 s
             | OpCodeValues.Initblk -> Stack.drop 3 s
-            | OpCodeValues.Sizeof -> Stack.push s evaluationStackCellType.I
-            | OpCodeValues.Refanytype -> Stack.push (Stack.drop 1 s) evaluationStackCellType.I4
+            | OpCodeValues.Sizeof -> Stack.push s NativeIntType
+            | OpCodeValues.Refanytype -> Stack.push (Stack.drop 1 s) Int32Typ
 
             | OpCodeValues.Call
             | OpCodeValues.Callvirt
@@ -963,12 +1003,12 @@ module EvaluationStackTyper =
                     if hasThis && opcodeValue <> OpCodeValues.Newobj then pops + 1
                     else pops
                 let s = Stack.drop pops s
-                let returnType = Reflection.getMethodReturnType callee
                 if opcodeValue = OpCodeValues.Newobj then
-                    Stack.push s evaluationStackCellType.Ref
+                    Reflection.getConstructedType callee |> push s
                 elif Reflection.hasNonVoidResult callee then
-                    push s returnType
+                    Reflection.getMethodReturnType callee |> push s
                 else s
+
             | OpCodeValues.Calli ->
                 // TODO: resolve and parse signature
                 internalfail "typeInstruction: Calli is not implemented"
@@ -978,8 +1018,6 @@ module EvaluationStackTyper =
                 s
             | _ -> s
         | SwitchArg -> s
-//       Logger.trace "typer after: %O" res.Length
-//       res
 
     let private createStackState (m : Reflection.MethodBase) (startInstr : ilInstr) =
         let q = System.Collections.Generic.Queue<ilInstr>()
@@ -1018,10 +1056,14 @@ module EvaluationStackTyper =
         startInstr.stackState <- Some Stack.empty
         createStackState m startInstr
 
-    let createEHStackState (m : Reflection.MethodBase) (flags : int) (startInstr : ilInstr) =
-        let catchFlags = LanguagePrimitives.EnumToValue System.Reflection.ExceptionHandlingClauseOptions.Clause
+    let createEHStackState (m : MethodBase) (flags : int) (matcher : ehClauseMatcher) (startInstr : ilInstr) =
+        let catchFlags = LanguagePrimitives.EnumToValue ExceptionHandlingClauseOptions.Clause
         if flags = catchFlags then // NOTE: is catch
-            startInstr.stackState <- Some [evaluationStackCellType.Ref] // TODO: finially and filter! #do
+            let exceptionType =
+                match matcher with
+                | ClassToken t -> Reflection.resolveType m (int32 t)
+                | Filter _ -> typeof<Exception>
+            startInstr.stackState <- Some [ObjectType exceptionType] // TODO: finally and filter! #do
         else startInstr.stackState <- Some Stack.empty
         createStackState m startInstr
 
@@ -1157,7 +1199,7 @@ type ILRewriter(body : rawMethodBody) =
         instr.opcode <- OpCode op
         instr.arg <- NoArg
         match instr.stackState with
-        | Some (_ :: _ :: tl)  -> newInstr.stackState <- Some(evaluationStackCellType.I4 :: tl)
+        | Some (_ :: _ :: tl)  -> newInstr.stackState <- Some(Int32Typ :: tl)
         | _ -> __unreachable__()
         newInstr.opcode <- OpCode brop
 
@@ -1165,8 +1207,7 @@ type ILRewriter(body : rawMethodBody) =
         match instr.stackState with
         | Some (x :: y :: _) ->
             match x with
-            | evaluationStackCellType.R4 -> assert(y = evaluationStackCellType.R4); true
-            | evaluationStackCellType.R8 -> assert(y = evaluationStackCellType.R8); true
+            | StackType.IntermediateFloat -> assert(x = y); true
             | _ -> false
         | _ -> __unreachable__()
 
@@ -1352,17 +1393,19 @@ type ILRewriter(body : rawMethodBody) =
         uint32 offset
 
     member private x.ImportEH() =
-        let parseEH (raw : rawExceptionHandler) = {
-            flags = raw.flags
-            tryBegin = x.InstrFromOffset <| int raw.tryOffset
-            tryEnd = (x.InstrFromOffset <| int (raw.tryOffset + raw.tryLength)).prev
-            handlerBegin =
-                let start = x.InstrFromOffset <| int raw.handlerOffset
-                EvaluationStackTyper.createEHStackState m raw.flags start
-                start
-            handlerEnd = (x.InstrFromOffset <| int (raw.handlerOffset + raw.handlerLength)).prev
-            matcher = if raw.flags &&& 0x0001 = 0 then ClassToken raw.matcher else Filter (x.InstrFromOffset <| int raw.matcher)
-        }
+        let parseEH (raw : rawExceptionHandler) =
+            let matcher = if raw.flags &&& 0x0001 = 0 then ClassToken raw.matcher else Filter (x.InstrFromOffset <| int raw.matcher)
+            {
+                flags = raw.flags
+                tryBegin = x.InstrFromOffset <| int raw.tryOffset
+                tryEnd = (x.InstrFromOffset <| int (raw.tryOffset + raw.tryLength)).prev
+                handlerBegin =
+                    let start = x.InstrFromOffset <| int raw.handlerOffset
+                    EvaluationStackTyper.createEHStackState m raw.flags matcher start
+                    start
+                handlerEnd = (x.InstrFromOffset <| int (raw.handlerOffset + raw.handlerLength)).prev
+                matcher = matcher
+            }
         ehs <- Array.map parseEH body.ehs
 
     member x.Import() =
