@@ -81,11 +81,11 @@ public class StackTyperTests
     private static stackType[][] _stateMergingTestStates =
     {
         new stackType[] { },
-        new stackType[] { stackType.Int32Typ },
+        new[] { stackType.Int32Typ },
         new stackType[] { },
-        new stackType[] { stackType.NewObjectType(typeof(A1)) },
+        new[] { stackType.NewObjectType(typeof(A1)) },
         new stackType[] { },
-        new stackType[] { stackType.NewObjectType(typeof(IA)) },
+        new[] { stackType.NewObjectType(typeof(IA)) },
         new stackType[] { }
     };
 
@@ -168,6 +168,49 @@ public class StackTyperTests
         new[] { stackType.Int32Typ, stackType.NewObjectType(typeof(B).MakeArrayType()) },
 
         new[] { stackType.NewObjectType(typeof(B)) }
+    };
+
+    private static void StateMergingTestArrays2(ILGenerator il)
+    {
+        var brLabel = il.DefineLabel();
+        var retLabel = il.DefineLabel();
+
+        // Array size
+        il.Emit(OpCodes.Ldc_I4_1);
+
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Brfalse_S, brLabel);
+
+        il.Emit(OpCodes.Newarr, typeof(OverflowException));
+
+        il.Emit(OpCodes.Br_S, retLabel);
+
+        il.MarkLabel(brLabel);
+        il.Emit(OpCodes.Newarr, typeof(OverflowException));
+
+        il.MarkLabel(retLabel);
+
+        // Index
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Ldelem_Ref);
+        il.Emit(OpCodes.Ret);
+    }
+
+    private static stackType[][] _stateMergingTestArraysStates2 =
+    {
+        new stackType[] { },
+        new[] { stackType.Int32Typ },
+        new[] { stackType.Int32Typ, stackType.Int32Typ },
+
+        new[] { stackType.Int32Typ },
+        new[] { stackType.NewObjectType(typeof(OverflowException).MakeArrayType()) },
+
+        new[] { stackType.Int32Typ },
+        new[] { stackType.NewObjectType(typeof(OverflowException).MakeArrayType()) },
+
+        new[] { stackType.Int32Typ, stackType.NewObjectType(typeof(OverflowException).MakeArrayType()) },
+
+        new[] { stackType.NewObjectType(typeof(OverflowException)) }
     };
 
     private static void ArrayListCovariance(ILGenerator il)
@@ -323,6 +366,7 @@ public class StackTyperTests
         new object[] { StateMergingTest, new[] { typeof(int) }, null, _stateMergingTestStates },
         new object[] { StateMergingTest2, new[] { typeof(int) }, null, _stateMergingTest2States },
         new object[] { StateMergingTestArrays, new[] { typeof(int) }, typeof(B), _stateMergingTestArraysStates },
+        new object[] { StateMergingTestArrays2, new[] { typeof(int) }, typeof(OverflowException), _stateMergingTestArraysStates2 },
         new object[] { ArrayListCovariance, new[] { typeof(int) }, typeof(B), _arrayListCovarianceStates }
     };
 
