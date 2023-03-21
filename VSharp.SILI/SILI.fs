@@ -92,6 +92,8 @@ type public SILI(options : SiliOptions) =
             BidirectionalSearcher(baseSearcher, BackwardSearcher(), DummyTargetedSearcher.DummyTargetedSearcher()) :> IBidirectionalSearcher
         | StackTraceReproductionMode _ -> __notImplemented__()
 
+    let mutable methodSequenceSearcher : IMethodSequenceSearcher = MethodSequenceSearcher(Seq.empty)
+
     let releaseBranches() =
         if not branchesReleased then
             branchesReleased <- true
@@ -134,21 +136,30 @@ type public SILI(options : SiliOptions) =
             reportStateIncomplete cilState
 
     let wrapOnTest (action : Action<UnitTest>) (state : cilState) =
-        Logger.info "Result of method %s is %O" (entryMethodOf state).FullName state.Result
-        Application.terminateState state
-        reportState action.Invoke false state null
+        if state.state.isMethodSequenceState then
+            methodSequenceSearcher.Finished state
+        else
+            Logger.info "Result of method %s is %O" (entryMethodOf state).FullName state.Result
+            Application.terminateState state
+            reportState action.Invoke false state null
 
     let wrapOnError (action : Action<UnitTest>) (state : cilState) errorMessage =
-        if not <| String.IsNullOrWhiteSpace errorMessage then
-            Logger.info "Error in %s: %s" (entryMethodOf state).FullName errorMessage
-        Application.terminateState state
-        reportState action.Invoke true state errorMessage
+        if state.state.isMethodSequenceState then
+            methodSequenceSearcher.FinishedWithError state
+        else
+            if not <| String.IsNullOrWhiteSpace errorMessage then
+                Logger.info "Error in %s: %s" (entryMethodOf state).FullName errorMessage
+            Application.terminateState state
+            reportState action.Invoke true state errorMessage
 
     let wrapOnStateIIE (action : Action<InsufficientInformationException>) (state : cilState) =
-        statistics.IncompleteStates.Add(state)
-        Application.terminateState state
-        searcher.Remove state
-        action.Invoke state.iie.Value
+        if state.state.isMethodSequenceState then
+            methodSequenceSearcher.FinishedWithError state
+        else
+            statistics.IncompleteStates.Add(state)
+            Application.terminateState state
+            searcher.Remove state
+            action.Invoke state.iie.Value
 
     let wrapOnIIE (action : Action<InsufficientInformationException>) (iie: InsufficientInformationException) =
         action.Invoke iie
@@ -174,6 +185,8 @@ type public SILI(options : SiliOptions) =
             action.Invoke(method, e)
 
     let wrapOnCrash (action : Action<Exception>) (e : Exception) = action.Invoke e
+
+    let pickMethodSequenceState() = false
 
     static member private AllocateByRefParameters initialState (method : Method) =
         let allocateIfByRef (pi : ParameterInfo) =
@@ -275,7 +288,14 @@ type public SILI(options : SiliOptions) =
     member private x.Forward (s : cilState) =
         let loc = s.currentLoc
         // TODO: update pobs when visiting new methods; use coverageZone
-        statistics.TrackStepForward s
+        match methodSequenceSearcher.TryGetSequence s with
+        | Exists seq -> s.state.methodSequence <- Some seq
+        // TODO: Update state metadata
+        | NotExist -> ()
+        | Unknown -> ()
+        // Maybe also track their statistics?
+        if not s.state.isMethodSequenceState then
+            statistics.TrackStepForward s
         let goodStates, iieStates, errors = interpreter.ExecuteOneInstruction s
         let goodStates, toReportFinished = goodStates |> List.partition (fun s -> isExecutable s || isIsolated s)
         toReportFinished |> List.iter reportFinished
@@ -303,8 +323,11 @@ type public SILI(options : SiliOptions) =
                 concolicMachines.Remove(s) |> ignore
                 concolicMachines.Add(cilState', machine)
         Application.moveState loc s (Seq.cast<_> newStates)
-        statistics.TrackFork s newStates
-        searcher.UpdateStates s newStates
+        if not s.state.isMethodSequenceState then
+            statistics.TrackFork s newStates
+            searcher.UpdateStates s newStates
+        else
+            methodSequenceSearcher.Update s newStates
 
     member private x.Backward p' s' =
         assert(currentLoc s' = p'.loc)
@@ -325,10 +348,17 @@ type public SILI(options : SiliOptions) =
 
     member private x.BidirectionalSymbolicExecution() =
         let mutable action = Stop
-        let pick() =
+        let pickFromMainSearcher() =
             match searcher.Pick() with
             | Stop -> false
             | a -> action <- a; true
+        let pick() =
+            if pickMethodSequenceState() then
+                match methodSequenceSearcher.Pick() with
+                | Some s -> action <- GoFront s; true
+                | None -> pickFromMainSearcher()
+            else
+                pickFromMainSearcher()
         (* TODO: checking for timeout here is not fine-grained enough (that is, we can work significantly beyond the
                  timeout, but we'll live with it for now. *)
         while not isStopped && pick() && statistics.CurrentExplorationTime.TotalMilliseconds < timeout do
@@ -390,6 +420,7 @@ type public SILI(options : SiliOptions) =
         SolverInteraction.setOnSolverStopped statistics.SolverStopped
         AcquireBranches()
         isCoverageAchieved <- always false
+        methodSequenceSearcher <- MethodSequenceSearcher entryMethods
         match options.explorationMode with
         | TestCoverageMode(coverageZone, _) ->
             Application.setCoverageZone (inCoverageZone coverageZone entryMethods)

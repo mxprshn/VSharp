@@ -41,6 +41,8 @@ module internal Memory =
         model = PrimitiveModel (Dictionary())
         complete = complete
         methodMocks = Dictionary()
+        isMethodSequenceState = false
+        methodSequence = None
     }
 
     type memoryMode =
@@ -1630,6 +1632,8 @@ module internal Memory =
                     model = state.model // TODO: compose models (for example, mocks)
                     complete = state.complete
                     methodMocks = methodMocks
+                    isMethodSequenceState = state.isMethodSequenceState
+                    methodSequence = state.methodSequence
                 }
         }
 

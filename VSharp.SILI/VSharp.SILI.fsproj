@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <TargetFramework>netcoreapp6.0</TargetFramework>
@@ -41,6 +41,7 @@
         <Compile Include="CILState.fs" />
         <Compile Include="Statistics.fs" />
         <Compile Include="Searcher.fs" />
+        <Compile Include="MethodSequenceSearcher.fs" />
         <Compile Include="Interpreter.fs" />
         <Compile Include="CombinedWeighter.fs" />
         <Compile Include="DistanceWeighter.fs" />
