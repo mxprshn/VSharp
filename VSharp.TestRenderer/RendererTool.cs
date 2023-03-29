@@ -506,7 +506,7 @@ public static class Renderer
 
         testProjectName ??= exploredAssembly.GetName().Name + ".Tests";
         Debug.Assert(testProjectName != null);
-
+AssemblyManager.alc.Resolving +=
         var testsPrograms =
             TestsRenderer.RenderTests(unitTests, testProjectName, wrapErrors, singleFile, declaringType);
 
@@ -533,10 +533,15 @@ public static class Renderer
     public static (DirectoryInfo, List<string>) Render(
         IEnumerable<FileInfo> tests,
         FileInfo testingProject,
+        Dictionary<string, string> dict,
         Type? declaringType = null,
         FileInfo? solutionForTests = null,
         string? targetFramework = null)
     {
+        AssemblyManager.alc.Resolving += (context, name) =>
+        {
+            dict.TryGetValue(name.FullName, out realPath);
+        }
         var outputDir = solutionForTests?.Directory;
         Debug.Assert(outputDir is { Exists: true });
         var testProjectPath = GenerateTestProject(outputDir, testingProject, solutionForTests, targetFramework);

@@ -128,6 +128,8 @@ module internal CallStack =
 
     let size stack = Stack.size stack.frames
 
+    let getTopFrame
+
     let toString (stack : callStack) =
         let printEntry (k, v) =
             Option.map (fun v -> sprintf "key = %s, value = %O" k v) v

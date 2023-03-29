@@ -47,6 +47,7 @@ type MethodWithBody internal (m : MethodBase) =
     let isCilStateInternalCall = lazy(Seq.contains fullGenericMethodName.Value Loader.CilStateImplementations)
     let isInternalCall =
         lazy(isFSharpInternalCall.Value || isCSharpInternalCall.Value || isCilStateInternalCall.Value)
+    let isPublic = m.IsPublic
 
     let actualMethod =
         if not isCSharpInternalCall.Value then m
@@ -106,6 +107,7 @@ type MethodWithBody internal (m : MethodBase) =
     member x.IsVirtual = isVirtual
     member x.IsFinal = isFinal
     member x.IsStaticConstructor with get() = isStaticConstructor.Force()
+    member x.IsPublic = isPublic
 
     member x.IsGenericMethod = isGenericMethod
     member x.GenericArguments with get() = genericArguments.Force()

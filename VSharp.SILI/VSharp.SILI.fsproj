@@ -39,9 +39,9 @@
         <Compile Include="Options.fs" />
         <Compile Include="InstructionPointer.fs" />
         <Compile Include="CILState.fs" />
+        <Compile Include="MethodSequenceState.fs" />
         <Compile Include="Statistics.fs" />
         <Compile Include="Searcher.fs" />
-        <Compile Include="MethodSequenceSearcher.fs" />
         <Compile Include="Interpreter.fs" />
         <Compile Include="CombinedWeighter.fs" />
         <Compile Include="DistanceWeighter.fs" />
@@ -56,6 +56,8 @@
         <Compile Include="Instrumenter.fs" />
         <Compile Include="ClientMachine.fs" />
         <Compile Include="TestGenerator.fs" />
+        <Compile Include="MethodSequenceSearcher.fs" />
+        <Compile Include="MethodSequenceExplorer.fs" />
         <Compile Include="SILI.fs" />
     </ItemGroup>
 
@@ -67,29 +69,17 @@
     </ItemGroup>
 
     <Target Name="CloneDotnetRuntime" BeforeTargets="UnixBuildConcolic;WinBuildConcolic" Condition=" $(BuildConcolic) And !Exists('../runtime') ">
-        <Exec Command='
-            cd ../
-            git clone https://github.com/dotnet/runtime.git
-            cd runtime
-            git checkout 3a25a7f1cc446b60678ed25c9d829420d6321eba'/>
+        <Exec Command="&#xD;&#xA;            cd ../&#xD;&#xA;            git clone https://github.com/dotnet/runtime.git&#xD;&#xA;            cd runtime&#xD;&#xA;            git checkout 3a25a7f1cc446b60678ed25c9d829420d6321eba" />
     </Target>
 
 <!--Building concolic every project build, to disable this, uncomment line below-->
 <!--    <Target Name="BuildConcolic" AfterTargets="BeforeBuild" Condition =" !Exists('../VSharp.ClrInteraction/cmake-build-debug') ">-->
     <Target Name="UnixBuildConcolic" AfterTargets="BeforeBuild" Condition=" $(BuildConcolic) And !$([MSBuild]::IsOSPlatform('Windows')) ">
-        <Exec Command='
-            cd ../VSharp.ClrInteraction
-            mkdir cmake-build-debug
-            cd cmake-build-debug
-            cmake -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Debug ../
-            cmake --build . --target vsharpConcolic -j 6'/>
+        <Exec Command="&#xD;&#xA;            cd ../VSharp.ClrInteraction&#xD;&#xA;            mkdir cmake-build-debug&#xD;&#xA;            cd cmake-build-debug&#xD;&#xA;            cmake -G &quot;Unix Makefiles&quot; -DCMAKE_BUILD_TYPE=Debug ../&#xD;&#xA;            cmake --build . --target vsharpConcolic -j 6" />
     </Target>
 
     <Target Name="WinBuildConcolic" AfterTargets="BeforeBuild" Condition=" $(BuildConcolic) And $([MSBuild]::IsOSPlatform('Windows')) ">
-        <Exec Command='
-            cd ../VSharp.ClrInteraction
-            mkdir build
-            msbuild VSharp.ClrInteraction.vcxproj /p:Configuration="Debug" /p:BuildOS="Windows_NT" /p:BuildType="Debug" /p:BuildArch="x64" /p:Platform="x64"'/>
+        <Exec Command="&#xD;&#xA;            cd ../VSharp.ClrInteraction&#xD;&#xA;            mkdir build&#xD;&#xA;            msbuild VSharp.ClrInteraction.vcxproj /p:Configuration=&quot;Debug&quot; /p:BuildOS=&quot;Windows_NT&quot; /p:BuildType=&quot;Debug&quot; /p:BuildArch=&quot;x64&quot; /p:Platform=&quot;x64&quot;" />
     </Target>
 
     <ItemGroup Condition=" $(BuildConcolic) And $([MSBuild]::IsOSPlatform('Linux')) ">

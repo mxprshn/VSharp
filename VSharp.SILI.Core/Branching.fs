@@ -59,7 +59,7 @@ module Branching =
             if PC.isFalse elsePc then
                 conditionState.methodSequence <- thenMethodSequence
                 thenBranch conditionState (List.singleton >> k)
-            elif not branchesReleased then
+            elif not branchesReleased && not state.isModelDriven then
                 conditionState.pc <- elsePc
                 match checkSat conditionState notCondition with
                 | SolverInteraction.SmtUnsat _ ->
@@ -92,7 +92,7 @@ module Branching =
             if PC.isFalse thenPc then
                 conditionState.methodSequence <- elseMethodSequence
                 elseBranch conditionState (List.singleton >> k)
-            elif not branchesReleased then
+            elif not branchesReleased && not state.isModelDriven then
                 conditionState.pc <- thenPc
                 match checkSat conditionState condition with
                 | SolverInteraction.SmtUnsat _ ->

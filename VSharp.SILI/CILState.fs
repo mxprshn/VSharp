@@ -1,5 +1,6 @@
 namespace VSharp.Interpreter.IL
 
+open System
 open VSharp
 open System.Text
 open System.Collections.Generic
@@ -104,6 +105,12 @@ module internal CilStateOperations =
         | [] -> __unreachable__()
         | Exit _ :: [] -> false
         | _ -> true
+
+    let isExiting (s : cilState) =
+        match s.ipStack with
+        | [] -> __unreachable__()
+        | Exit _ :: _ -> true
+        | _ -> false
 
     let isError (s : cilState) =
         match s.state.exceptionsRegister with

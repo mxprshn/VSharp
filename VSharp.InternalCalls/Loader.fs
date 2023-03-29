@@ -53,6 +53,9 @@ module Loader =
         ]
         |> collectImplementations
 
+    let MethodSequenceUtilsNop =
+        CSharpUtilsAssembly.GetType("VSharp.CSharpUtils.MethodSequenceUtils").GetMethod("Nop")
+
     let public FSharpImplementations =
         // Loading assembly and collecting methods via default assembly load context,
         // because all VSharp types, like VSharp.Core.state are loaded via default load context,

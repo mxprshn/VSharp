@@ -239,7 +239,7 @@ and
         mutable model : model                                              // Concrete valuation of symbolics
         complete : bool                                                    // If true, reading of undefined locations would result in default values
         methodMocks : IDictionary<IMethod, IMethodMock>
-        isMethodSequenceState : bool
+        isModelDriven : bool
         mutable methodSequence : methodSequence option
     }
 
