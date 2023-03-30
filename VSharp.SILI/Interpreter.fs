@@ -1169,7 +1169,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
                 popFrameOf cilState
                 let modelState =
                     match model with
-                    | StateModel(s, _) -> s
+                    | StateModel(s, _, _) -> s
                     | _ -> __unreachable__()
                 modelState.allocatedTypes <- PersistentDict.add thisInModel (MockType mock) modelState.allocatedTypes
                 let overriden =

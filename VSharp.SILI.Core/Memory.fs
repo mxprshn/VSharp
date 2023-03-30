@@ -802,7 +802,7 @@ module internal Memory =
         let fieldsWithZeros, fstOffset = Array.foldBack addZerosBetween fieldIntervals (List.empty, blockSize)
         let zeros = if fstOffset > 0 then List.init fstOffset (fun i -> betweenField, i, 1) else List.empty
         let allFields = List.foldBack (fun zero fields -> zero :: fields) zeros fieldsWithZeros
-        let readFieldOrZero fieldId =
+        let readFieldOrZero (fieldId : fieldId) =
             if fieldId.name = "" then makeDefaultValue fieldId.typ
             else readField fieldId
         let getField (fieldId, fieldOffset, _) =

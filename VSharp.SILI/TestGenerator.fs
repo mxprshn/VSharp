@@ -77,7 +77,7 @@ module TestGenerator =
             let arrays =
                 if VectorTime.less cha VectorTime.zero then
                     match model with
-                    | StateModel(modelState, _) -> modelState.arrays
+                    | StateModel(modelState, _, _) -> modelState.arrays
                     | _ -> __unreachable__()
                 else
                     state.arrays
@@ -148,7 +148,7 @@ module TestGenerator =
         | NullPtr -> null
         | {term = HeapRef({term = ConcreteHeapAddress(addr)}, _)} when VectorTime.less addr VectorTime.zero ->
             match model with
-            | StateModel(modelState, _) ->
+            | StateModel(modelState, _, _) ->
                 let eval address =
                     address |> Ref |> Memory.Read modelState |> model.Complete |> term2obj model state indices mockCache implementations test
                 let arr2Obj = encodeArrayCompactly state model (term2obj model state indices mockCache implementations test)
@@ -201,7 +201,7 @@ module TestGenerator =
             then internalfail "Finished state has many frames on stack! (possibly unhandled exception)"
 
         match model with
-        | StateModel(modelState, typeModel) ->
+        | StateModel(modelState, typeModel, _) ->
             match SolveGenericMethodParameters typeModel m with
             | None -> None
             | Some(classParams, methodParams) ->

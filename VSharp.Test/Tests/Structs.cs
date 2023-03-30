@@ -27,6 +27,18 @@ namespace IntegrationTests
         }
 
         [TestSvm(100)]
+        public void Scale(int factor)
+        {
+            if (factor <= 0)
+            {
+                throw new ArgumentException();
+            }
+
+            _x *= factor;
+            _y *= factor;
+        }
+
+        [TestSvm(100)]
         public void ThrowIfNotOnXAxis()
         {
             if (_y != 0)

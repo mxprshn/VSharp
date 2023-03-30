@@ -950,7 +950,7 @@ module internal Z3 =
 
             encodingCache.heapAddresses.Clear()
             state.model <- PrimitiveModel subst
-            StateModel(state, typeModel.CreateEmpty())
+            StateModel(state, typeModel.CreateEmpty(), None)
 
 
     let private ctx = new Context()

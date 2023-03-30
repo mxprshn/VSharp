@@ -97,13 +97,24 @@ type arrayCopyInfo =
         override x.ToString() =
             sprintf "    source address: %O, from %O ranging %O elements into %O index with cast to %O;\n\r    updates: %O" x.srcAddress x.srcIndex x.length x.dstIndex x.dstSightType (MemoryRegion.toString "        " x.contents)
 
+type methodSequenceVariable = {name : string; typ : Type}
+
+type methodSequenceArgument =
+    | Default of Type
+    | Primitive of Type * obj
+    | PrimitiveHole of Type
+    | Variable of methodSequenceVariable
+
+type methodSequenceElement =
+    | Call of IMethod * methodSequenceVariable option * methodSequenceArgument list
+
 type model =
     | PrimitiveModel of IDictionary<ISymbolicConstantSource, term>
-    | StateModel of state * typeModel
+    | StateModel of state * typeModel * methodSequenceElement list option
 with
     member x.Complete value =
         match x with
-        | StateModel(state, _) when state.complete ->
+        | StateModel(state, _, _) when state.complete ->
             // TODO: ideally, here should go the full-fledged substitution, but we try to improve the performance a bit...
             match value.term with
             | Constant(_, _, typ) -> makeDefaultValue typ
@@ -121,13 +132,13 @@ with
         Substitution.substitute (function
             | { term = Constant(_, (:? IStatedSymbolicConstantSource as source), typ) } as term ->
                 match x with
-                | StateModel(state, _) -> source.Compose state
+                | StateModel(state, _, _) -> source.Compose state
                 | PrimitiveModel subst -> model.EvalDict subst source term typ true
             | { term = Constant(_, source, typ) } as term ->
                 let subst, complete =
                     match x with
                     | PrimitiveModel dict -> dict, true
-                    | StateModel(state, _) ->
+                    | StateModel(state, _, _) ->
                         match state.model with
                         | PrimitiveModel dict -> dict, state.complete
                         | _ -> __unreachable__()

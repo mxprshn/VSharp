@@ -175,6 +175,7 @@ module API =
 
         let AddConstraint conditionState condition = Memory.addConstraint conditionState condition
         let IsFalsePathCondition conditionState = PC.isFalse conditionState.pc
+        let IsTruePathCondition conditionState = PC.isEmpty conditionState.pc
         let Contradicts state condition = PC.add state.pc condition |> PC.isFalse
         let PathConditionToSeq (pc : pathCondition) = PC.toSeq pc
         let EmptyPathCondition = PC.empty
@@ -275,7 +276,7 @@ module API =
         let EmptyModel method typeModel =
             let modelState = Memory.makeEmpty true
             Memory.fillModelWithParametersAndThis modelState method
-            StateModel(modelState, typeModel)
+            StateModel(modelState, typeModel, None)
 
         let PopFrame state = Memory.popFrame state
         let ForcePopFrames count state = Memory.forcePopFrames count state
@@ -439,6 +440,15 @@ module API =
         let CreateStringFromChar state char = Memory.createStringFromChar state char
 
         let AllocateConcreteObject state (obj : obj) typ = Memory.allocateConcreteObject state obj typ
+
+        let IsAllocated state (key : stackKey) =
+            if state.stack.frames.IsEmpty then
+                false
+            else
+                match PersistentDict.tryFind state.stack.frames.Head.entries key with
+                | Some { value = None }
+                | None -> false
+                | Some _ -> true
 
         let LinearizeArrayIndex state address indices (_, dim, _ as arrayType) =
             let lens = List.init dim (fun dim -> Memory.readLength state address (makeNumber dim) arrayType)

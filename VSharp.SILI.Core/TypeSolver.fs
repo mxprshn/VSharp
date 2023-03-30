@@ -164,7 +164,7 @@ module TypeSolver =
 
     let private generateConstraints state (model : model) conditions =
         match model with
-        | StateModel(_, typeModel) ->
+        | StateModel(_, typeModel, _) ->
             let supertypeConstraints = Dictionary<concreteHeapAddress, HashSet<Type>>()
             let subtypeConstraints = Dictionary<concreteHeapAddress, HashSet<Type>>()
             let notSupertypeConstraints = Dictionary<concreteHeapAddress, HashSet<Type>>()
@@ -458,7 +458,7 @@ module TypeSolver =
 
     let solveTypes (model : model) (state : state) condition =
         match model with
-        | StateModel(modelState, typeModel) ->
+        | StateModel(modelState, typeModel, _) ->
             let m = CallStack.stackTrace state.stack |> List.last
             let addresses, constraints = Seq.singleton condition |> generateConstraints state model
             let typeParams, methodParams = getGenericParameters m
@@ -472,12 +472,12 @@ module TypeSolver =
 
     let checkSatWithSubtyping state condition =
         match SolverInteraction.checkSat state with
-        | SolverInteraction.SmtSat ({mdl = StateModel(modelState, _) as model} as satInfo) ->
+        | SolverInteraction.SmtSat ({mdl = StateModel(modelState, _, _) as model} as satInfo) ->
             try
                 match solveTypes model state condition with
                 | TypeUnsat -> SolverInteraction.SmtUnsat {core = Array.empty}
                 | TypeSat typeModel ->
-                    SolverInteraction.SmtSat {satInfo with mdl = StateModel(modelState, typeModel)}
+                    SolverInteraction.SmtSat {satInfo with mdl = StateModel(modelState, typeModel, None)}
             with :? InsufficientInformationException as e ->
                 SolverInteraction.SmtUnknown e.Message
         | result -> result
@@ -493,7 +493,7 @@ module TypeSolver =
             state.allocatedTypes[thisAddress] |> Seq.singleton
         | HeapRef(thisAddress, _) ->
             match state.model with
-            | StateModel(_, typeModel) ->
+            | StateModel(_, typeModel, _) ->
                 let thisConstraints = { typeConstraints.Empty with supertypes = thisType |> List.singleton }
                 typeModel.AddConstraint thisAddress thisConstraints
                 let ancestorMethod = ancestorMethod.MethodBase :?> MethodInfo

@@ -11,6 +11,7 @@ open VSharp.Concolic
 open VSharp.Core
 open CilStateOperations
 open VSharp.Interpreter.IL
+open VSharp.MethodSequences
 open VSharp.Solver
 
 type public SILI(options : SiliOptions) =
@@ -44,6 +45,8 @@ type public SILI(options : SiliOptions) =
         | ConcolicMode -> true
         | SymbolicMode -> false
     let interpreter = ILInterpreter(isConcolicMode)
+
+    let methodSequenceGenerator = MethodSequenceGenerator((fun _ -> MethodSequenceSearcher()), interpreter)
 
     let mutable reportFinished : cilState -> unit = fun _ -> internalfail "reporter not configured!"
     let mutable reportError : cilState -> string -> unit = fun _ -> internalfail "reporter not configured!"
@@ -113,6 +116,10 @@ type public SILI(options : SiliOptions) =
 
     let reportState reporter isError cilState message =
         try
+            match cilState.state.model with
+                | StateModel(_, _, Some methods) ->
+                    Console.WriteLine $"{methods}"
+                | _ -> ()
             searcher.Remove cilState
             if cilState.history |> Seq.exists (not << statistics.IsBasicBlockCoveredByTest)
             then
@@ -238,6 +245,7 @@ type public SILI(options : SiliOptions) =
             let cilStates = ILInterpreter.CheckDisallowNullAssumptions cilState method false
             assert (List.length cilStates = 1)
             let [cilState] = cilStates
+            methodSequenceGenerator.GetSequenceOrEnqueue cilState |> ignore
             match options.executionMode with
             | ConcolicMode -> List.singleton cilState
             | SymbolicMode -> interpreter.InitializeStatics cilState method.DeclaringType List.singleton
@@ -249,8 +257,9 @@ type public SILI(options : SiliOptions) =
     member private x.FormEntryPointInitialStates (method : Method, mainArguments : string[], typModel : typeModel) : cilState list =
         try
             assert method.IsStatic
-            let optionArgs = if mainArguments = null then None else Some mainArguments
-            let state = { Memory.EmptyState() with complete = mainArguments <> null }
+            let hasConcreteMainArguments = mainArguments <> null
+            let optionArgs = if not hasConcreteMainArguments then None else Some mainArguments
+            let state = { Memory.EmptyState() with complete = hasConcreteMainArguments }
             state.model <- Memory.EmptyModel method typModel
             let argsToState args =
                 let stringType = typeof<string>
@@ -268,12 +277,15 @@ type public SILI(options : SiliOptions) =
                 // Filling model with default args to match PC
                 let modelState =
                     match state.model with
-                    | StateModel(modelState, _) -> modelState
+                    | StateModel(modelState, _, _) -> modelState
                     | _ -> __unreachable__()
                 let argsForModel = Memory.AllocateVectorArray modelState (MakeNumber 0) typeof<String>
                 Memory.WriteLocalVariable modelState (ParameterKey argsParameter) argsForModel
             Memory.InitializeStaticMembers state method.DeclaringType
             let initialState = makeInitialState method state
+            if not hasConcreteMainArguments then
+                // TODO: do something with concrete arguments?
+                methodSequenceGenerator.GetSequenceOrEnqueue initialState |> ignore
             [initialState]
         with
         | e ->
@@ -312,6 +324,7 @@ type public SILI(options : SiliOptions) =
                 concolicMachines.Add(cilState', machine)
         Application.moveState loc s (Seq.cast<_> newStates)
         statistics.TrackFork s newStates
+        (s :: newStates) |> Seq.iter (methodSequenceGenerator.GetSequenceOrEnqueue >> ignore)
         searcher.UpdateStates s newStates
 
     member private x.Backward p' s' =

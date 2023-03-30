@@ -53,8 +53,8 @@ module public SolverInteraction =
             let result = s.CheckSat ctx formula
             onSolverStopped()
             match result, state.model with
-            | SmtSat { mdl = StateModel(modelState, _) }, StateModel(_, typeModel) ->
+            | SmtSat { mdl = StateModel(modelState, _, _) }, StateModel(_, typeModel, _) ->
                 // Copying type model to prevent it from mutating in forked state
-                SmtSat { mdl = StateModel(modelState, typeModel.Copy()) }
+                SmtSat { mdl = StateModel(modelState, typeModel.Copy(), None) }
             | result, _ -> result
         | None -> SmtUnknown ""

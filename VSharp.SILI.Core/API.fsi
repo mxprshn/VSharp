@@ -117,6 +117,7 @@ module API =
 
         val AddConstraint : state -> term -> unit
         val IsFalsePathCondition : state -> bool
+        val IsTruePathCondition : state -> bool
         val Contradicts : state -> term -> bool
         val PathConditionToSeq : pathCondition -> term seq
         val EmptyPathCondition : pathCondition
@@ -264,6 +265,7 @@ module API =
         val AllocateEmptyString : state -> term -> term
         val AllocateDelegate : state -> term -> term
         val CreateStringFromChar : state -> term -> term
+        val IsAllocated : state -> stackKey -> bool
 
         val AllocateConcreteObject : state -> obj -> Type -> term
 
