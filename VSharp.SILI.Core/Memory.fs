@@ -19,7 +19,7 @@ module internal Memory =
 
 // ------------------------------- Primitives -------------------------------
 
-    let makeEmpty complete = {
+    let makeEmpty complete isModelState = {
         pc = PC.empty
         evaluationStack = EvaluationStack.empty
         exceptionsRegister = NoException
@@ -36,11 +36,12 @@ module internal Memory =
         allocatedTypes = PersistentDict.empty
         typeVariables = (MappedStack.empty, Stack.empty)
         delegates = PersistentDict.empty
-        currentTime = [1]
-        startingTime = VectorTime.zero
+        currentTime = [if isModelState then -1 else 1]
+        startingTime = if isModelState then [-2] else VectorTime.zero
         model = PrimitiveModel (Dictionary())
         complete = complete
         methodMocks = Dictionary()
+        isModelState = isModelState
     }
 
     type memoryMode =
@@ -417,7 +418,14 @@ module internal Memory =
 // -------------------------- Allocation helpers --------------------------
 
     let freshAddress state =
-        state.currentTime <- VectorTime.advance state.currentTime
+        let newTime =
+            if state.isModelState then
+                let startingTime = VectorTime.decrement state.startingTime
+                state.startingTime <- startingTime
+                let currentTime = VectorTime.decrement state.currentTime
+                currentTime
+            else VectorTime.advance state.currentTime
+        state.currentTime <- newTime
         state.currentTime
 
     let allocateType state (typ : Type) =
@@ -782,7 +790,8 @@ module internal Memory =
 
     and private readStructUnsafe fields structType startByte endByte =
         let readField fieldId = fields.[fieldId]
-        readFieldsUnsafe (makeEmpty false) (fun _ -> __unreachable__()) readField false structType startByte endByte
+        // Is this safe to pass false here?
+        readFieldsUnsafe (makeEmpty false false) (fun _ -> __unreachable__()) readField false structType startByte endByte
 
     and private getAffectedFields state reportError readField isStatic (blockType : Type) startByte endByte =
         let blockSize = CSharpUtils.LayoutUtils.ClassSize blockType
@@ -1147,7 +1156,7 @@ module internal Memory =
 
     and private writeStructUnsafe structTerm fields structType startByte value =
         let readField fieldId = fields.[fieldId]
-        let updatedFields = writeFieldsUnsafe (makeEmpty false) (fun _ -> __unreachable__()) readField false structType startByte value
+        let updatedFields = writeFieldsUnsafe (makeEmpty false false) (fun _ -> __unreachable__()) readField false structType startByte value
         let writeField structTerm (fieldId, value) = writeStruct structTerm fieldId value
         List.fold writeField structTerm updatedFields
 
@@ -1630,6 +1639,7 @@ module internal Memory =
                     model = state.model // TODO: compose models (for example, mocks)
                     complete = state.complete
                     methodMocks = methodMocks
+                    isModelState = state.isModelState
                 }
         }
 

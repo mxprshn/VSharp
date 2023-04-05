@@ -97,16 +97,29 @@ type arrayCopyInfo =
         override x.ToString() =
             sprintf "    source address: %O, from %O ranging %O elements into %O index with cast to %O;\n\r    updates: %O" x.srcAddress x.srcIndex x.length x.dstIndex x.dstSightType (MemoryRegion.toString "        " x.contents)
 
-type methodSequenceVariable = {name : string; typ : Type}
-
 type methodSequenceArgument =
     | Default of Type
-    | Primitive of Type * obj
-    | PrimitiveHole of Type
-    | Variable of methodSequenceVariable
+    | ConcretePrimitive of Type * obj
+    | Variable of stackKey
+    | OutVariable of stackKey
+
+    override x.ToString() =
+        match x with
+        | Default typ -> $"default({typ})"
+        | ConcretePrimitive(_, value) -> $"{value}"
+        | Variable key -> $"{key}"
+        | OutVariable key -> $"out {key}"
 
 type methodSequenceElement =
-    | Call of IMethod * methodSequenceVariable option * methodSequenceArgument list
+    | Call of IMethod * stackKey option * methodSequenceArgument list
+
+    override x.ToString() =
+        let separator = ", "
+        match x with
+        | Call(method, Some ret, args) ->
+            $"{ret} = {method.DeclaringType.Name}.{method.Name}({join separator (args |> List.map (fun a -> a.ToString()))})"
+        | Call(method, None, args) ->
+            $"{method.DeclaringType.Name}.{method.Name}({join separator (args |> List.map (fun a -> a.ToString()))})"
 
 type model =
     | PrimitiveModel of IDictionary<ISymbolicConstantSource, term>
@@ -132,16 +145,28 @@ with
         Substitution.substitute (function
             | { term = Constant(_, (:? IStatedSymbolicConstantSource as source), typ) } as term ->
                 match x with
-                | StateModel(state, _, _) -> source.Compose state
+                | StateModel(state, _, None) -> source.Compose state
+                | StateModel(state, _, Some _) ->
+                    let composed = source.Compose state
+                    match state.model with
+                    | StateModel _ as innerModel -> innerModel.Eval composed
+                    | _ -> composed
                 | PrimitiveModel subst -> model.EvalDict subst source term typ true
             | { term = Constant(_, source, typ) } as term ->
                 let subst, complete =
                     match x with
                     | PrimitiveModel dict -> dict, true
-                    | StateModel(state, _, _) ->
+                    | StateModel(state, _, None) ->
                         match state.model with
                         | PrimitiveModel dict -> dict, state.complete
                         | _ -> __unreachable__()
+                    | StateModel(state, _, Some _) ->
+                        match state.model with
+                        | PrimitiveModel dict -> dict, state.complete
+                        | StateModel(innerState, _, _) ->
+                            match innerState.model with
+                            | PrimitiveModel dict -> dict, state.complete
+                            | _ -> __unreachable__()
                 model.EvalDict subst source term typ complete
             | term -> term) id id term
 
@@ -250,6 +275,7 @@ and
         mutable model : model                                              // Concrete valuation of symbolics
         complete : bool                                                    // If true, reading of undefined locations would result in default values
         methodMocks : IDictionary<IMethod, IMethodMock>
+        isModelState : bool
     }
 
 and

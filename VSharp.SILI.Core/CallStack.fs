@@ -62,6 +62,7 @@ module internal CallStack =
 
     let readStackLocation (stack : callStack) key makeSymbolic =
         // Is it OK that SMT model may have key -> None?
+        // TODO: move this check to separate function
         if stack.frames.Length = 1 && stack.frames.Head.func = None && (stack.frames.Head.entries |> PersistentDict.forall (fun (key', _) -> key <> key')) then
             // This state is formed by SMT solver model, just return the default value
             match key with

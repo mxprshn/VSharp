@@ -22,6 +22,8 @@ module VectorTime =
 //        t |> Seq.pairwise |> Seq.forall (fun (a, b) -> a >= b)
 
     let advance (t : vectorTime) = List.mapLast (fun x -> x + 1) t
+
+    let decrement (t : vectorTime) = List.mapLast (fun x -> x - 1) t
 //        assert(isDescending t)
 //        let inc x = if x = System.UInt32.MaxValue then internalfailf "Advancing infinite time!" else x + 1u
 //        let getNextTime x acc =

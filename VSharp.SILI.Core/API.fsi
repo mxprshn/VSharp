@@ -121,6 +121,7 @@ module API =
         val Contradicts : state -> term -> bool
         val PathConditionToSeq : pathCondition -> term seq
         val EmptyPathCondition : pathCondition
+        val MapPathCondition : (term -> term) -> pathCondition -> pathCondition
 
     module Types =
 
@@ -213,6 +214,8 @@ module API =
 
     module public Memory =
         val EmptyState : unit -> state
+        val EmptyModelState : unit -> state
+        val CopyState : state -> state
         val EmptyModel : IMethod -> typeModel -> model
         val PopFrame : state -> unit
         val ForcePopFrames : int -> state -> unit
@@ -296,6 +299,7 @@ module API =
         // TODO: get rid of all unnecessary stuff below!
         val ComposeStates : state -> state -> state list
         val WLP : state -> pathCondition -> pathCondition
+        val FillHoles : state -> pathCondition -> pathCondition
 
         val Merge2States : state -> state -> state list
         val Merge2Results : term * state -> term * state -> (term * state) list

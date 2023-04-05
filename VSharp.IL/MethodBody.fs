@@ -106,6 +106,7 @@ type MethodWithBody internal (m : MethodBase) =
     member x.IsVirtual = isVirtual
     member x.IsFinal = isFinal
     member x.IsStaticConstructor with get() = isStaticConstructor.Force()
+    member x.IsConstructor = isConstructor
     member x.IsPublic = m.IsPublic
 
     member x.IsGenericMethod = isGenericMethod

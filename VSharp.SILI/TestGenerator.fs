@@ -146,7 +146,7 @@ module TestGenerator =
             test.MemoryGraph.RepresentStruct t fieldReprs
         | NullRef _
         | NullPtr -> null
-        | {term = HeapRef({term = ConcreteHeapAddress(addr)}, _)} when VectorTime.less addr VectorTime.zero ->
+        | {term = HeapRef({term = ConcreteHeapAddress(addr)}, _)} when VectorTime.less addr state.startingTime ->
             match model with
             | StateModel(modelState, _, _) ->
                 let eval address =

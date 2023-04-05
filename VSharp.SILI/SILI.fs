@@ -46,7 +46,7 @@ type public SILI(options : SiliOptions) =
         | SymbolicMode -> false
     let interpreter = ILInterpreter(isConcolicMode)
 
-    let methodSequenceGenerator = MethodSequenceGenerator((fun _ -> MethodSequenceSearcher()), interpreter)
+    let methodSequenceGenerator = MethodSequenceGenerator((fun method -> MethodSequenceSearcher(method, Int32.MaxValue)), interpreter)
 
     let mutable reportFinished : cilState -> unit = fun _ -> internalfail "reporter not configured!"
     let mutable reportError : cilState -> string -> unit = fun _ -> internalfail "reporter not configured!"
@@ -116,13 +116,14 @@ type public SILI(options : SiliOptions) =
 
     let reportState reporter isError cilState message =
         try
-            match cilState.state.model with
-                | StateModel(_, _, Some methods) ->
-                    Console.WriteLine $"{methods}"
-                | _ -> ()
             searcher.Remove cilState
             if cilState.history |> Seq.exists (not << statistics.IsBasicBlockCoveredByTest)
             then
+                match cilState.state.model with
+                | StateModel(_, _, Some methods) ->
+                    let separator = "\n"
+                    Console.WriteLine $"\n{methods |> List.map (fun c -> c.ToString()) |> join separator}"
+                | _ -> Console.WriteLine "\nNo sequence found"
                 let hasException =
                     match cilState.state.exceptionsRegister with
                     | Unhandled _ -> true
@@ -245,7 +246,7 @@ type public SILI(options : SiliOptions) =
             let cilStates = ILInterpreter.CheckDisallowNullAssumptions cilState method false
             assert (List.length cilStates = 1)
             let [cilState] = cilStates
-            methodSequenceGenerator.GetSequenceOrEnqueue cilState |> ignore
+            methodSequenceGenerator.GetSequenceOrEnqueue None cilState |> ignore
             match options.executionMode with
             | ConcolicMode -> List.singleton cilState
             | SymbolicMode -> interpreter.InitializeStatics cilState method.DeclaringType List.singleton
@@ -285,7 +286,7 @@ type public SILI(options : SiliOptions) =
             let initialState = makeInitialState method state
             if not hasConcreteMainArguments then
                 // TODO: do something with concrete arguments?
-                methodSequenceGenerator.GetSequenceOrEnqueue initialState |> ignore
+                methodSequenceGenerator.GetSequenceOrEnqueue None initialState |> ignore
             [initialState]
         with
         | e ->
@@ -293,6 +294,8 @@ type public SILI(options : SiliOptions) =
             []
 
     member private x.Forward (s : cilState) =
+        for i in 0..1 do
+            methodSequenceGenerator.MakeStep() |> ignore
         let loc = s.currentLoc
         // TODO: update pobs when visiting new methods; use coverageZone
         statistics.TrackStepForward s
@@ -324,7 +327,8 @@ type public SILI(options : SiliOptions) =
                 concolicMachines.Add(cilState', machine)
         Application.moveState loc s (Seq.cast<_> newStates)
         statistics.TrackFork s newStates
-        (s :: newStates) |> Seq.iter (methodSequenceGenerator.GetSequenceOrEnqueue >> ignore)
+        if not <| List.isEmpty newStates then
+            (s :: newStates) |> Seq.iter (methodSequenceGenerator.GetSequenceOrEnqueue (Some s) >> ignore)
         searcher.UpdateStates s newStates
 
     member private x.Backward p' s' =
