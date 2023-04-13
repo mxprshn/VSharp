@@ -187,7 +187,7 @@ type MethodWithBody internal (m : MethodBase) =
         // Method should not contain varargs
         (m.CallingConvention &&& CallingConventions.VarArgs) <> CallingConventions.VarArgs
 
-    interface VSharp.Core.IMethod with
+    interface IMethod with
         override x.Name = name
         override x.FullName = fullName
         override x.ReturnType = returnType
@@ -199,13 +199,14 @@ type MethodWithBody internal (m : MethodBase) =
         override x.IsConstructor = isConstructor
         override x.GenericArguments with get() = genericArguments.Value
         override x.SubstituteTypeVariables subst =
-            Reflection.concretizeMethodBase m subst |> MethodWithBody.InstantiateNew :> VSharp.Core.IMethod
+            Reflection.concretizeMethodBase m subst |> MethodWithBody.InstantiateNew :> IMethod
         override x.CompareTo(y : obj) =
             match y with
-            | :? MethodWithBody as y -> Reflection.compareMethods (x :> Core.IMethod).MethodBase (y :> Core.IMethod).MethodBase
+            | :? MethodWithBody as y -> Reflection.compareMethods (x :> IMethod).MethodBase (y :> IMethod).MethodBase
             | _ -> -1
         // TODO: make it private!
         override x.MethodBase : MethodBase = m
+        override x.MetadataToken : int = metadataToken
 
     member private x.Descriptor = desc
 

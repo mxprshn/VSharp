@@ -6,7 +6,7 @@ open System.Reflection
 open FSharpx.Collections
 open VSharp
 open VSharp.Core
-open System.Linq;
+open System.Linq
 
 module TestGenerator =
 
@@ -201,7 +201,12 @@ module TestGenerator =
             then internalfail "Finished state has many frames on stack! (possibly unhandled exception)"
 
         match model with
-        | StateModel(modelState, typeModel, _) ->
+        | StateModel(modelState, typeModel, sequence) ->
+            match sequence with
+            | Some sequence ->
+                 test.MethodSequence <- sequence
+            | _ -> ()
+
             match SolveGenericMethodParameters typeModel m with
             | None -> None
             | Some(classParams, methodParams) ->

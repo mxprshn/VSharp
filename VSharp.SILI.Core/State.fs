@@ -4,6 +4,7 @@ open System
 open System.Collections.Generic
 open VSharp
 open VSharp.Core
+open VSharp.MethodSequences
 open VSharp.Utils
 
 type typeVariables = mappedStack<typeWrapper, Type> * Type list stack
@@ -96,30 +97,6 @@ type arrayCopyInfo =
     {srcAddress : heapAddress; contents : arrayRegion; srcIndex : term; dstIndex : term; length : term; srcSightType : Type; dstSightType : Type} with
         override x.ToString() =
             sprintf "    source address: %O, from %O ranging %O elements into %O index with cast to %O;\n\r    updates: %O" x.srcAddress x.srcIndex x.length x.dstIndex x.dstSightType (MemoryRegion.toString "        " x.contents)
-
-type methodSequenceArgument =
-    | Default of Type
-    | ConcretePrimitive of Type * obj
-    | Variable of stackKey
-    | OutVariable of stackKey
-
-    override x.ToString() =
-        match x with
-        | Default typ -> $"default({typ})"
-        | ConcretePrimitive(_, value) -> $"{value}"
-        | Variable key -> $"{key}"
-        | OutVariable key -> $"out {key}"
-
-type methodSequenceElement =
-    | Call of IMethod * stackKey option * methodSequenceArgument list
-
-    override x.ToString() =
-        let separator = ", "
-        match x with
-        | Call(method, Some ret, args) ->
-            $"{ret} = {method.DeclaringType.Name}.{method.Name}({join separator (args |> List.map (fun a -> a.ToString()))})"
-        | Call(method, None, args) ->
-            $"{method.DeclaringType.Name}.{method.Name}({join separator (args |> List.map (fun a -> a.ToString()))})"
 
 type model =
     | PrimitiveModel of IDictionary<ISymbolicConstantSource, term>

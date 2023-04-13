@@ -17,6 +17,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <Compile Include="IMethod.fs" />
         <Compile Include="Logger.fs" />
         <Compile Include="WeakDictionary.fs" />
         <Compile Include="Prelude.fs" />
@@ -40,6 +41,7 @@
         <Compile Include="FileSystem.fs" />
         <Compile Include="MemoryGraph.fs" />
         <Compile Include="Mocking.fs" />
+        <Compile Include="MethodSequence.fs" />
         <Compile Include="UnitTest.fs" />
         <Compile Include="UnitTests.fs" />
         <Compile Include="TestResultsChecker.fs" />

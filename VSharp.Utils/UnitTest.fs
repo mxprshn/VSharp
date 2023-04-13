@@ -5,6 +5,7 @@ open System.IO
 open System.Reflection
 open System.Xml.Serialization
 open VSharp
+open VSharp.MethodSequences
 
 [<CLIMutable>]
 [<Serializable>]
@@ -31,6 +32,7 @@ type testInfo = {
     memory : memoryRepr
     extraAssemblyLoadDirs : string array
     typeMocks : typeMockRepr array
+    methodSequence : methodSequenceElementRepr array
 }
 with
     static member OfMethod(m : MethodBase) = {
@@ -50,6 +52,7 @@ with
         memory = {objects = Array.empty; types = Array.empty}
         extraAssemblyLoadDirs = Array.empty
         typeMocks = Array.empty
+        methodSequence = Array.empty
     }
 
 type UnitTest private (m : MethodBase, info : testInfo, createCompactRepr : bool) =
@@ -66,6 +69,9 @@ type UnitTest private (m : MethodBase, info : testInfo, createCompactRepr : bool
     let errorMessage = info.errorMessage
     let expectedResult = memoryGraph.DecodeValue info.expectedResult
     let compactRepresentations = memoryGraph.CompactRepresentations()
+    let invokableMethodSequence =
+        if info.methodSequence.Length = 0 then null
+        else InvokableMethodSequence(info.methodSequence)
 //    let classTypeParameters = info.classTypeParameters |> Array.map Serialization.decodeType
 //    let methodTypeParameters = info.methodTypeParameters |> Array.map Serialization.decodeType
     let mutable extraAssemblyLoadDirs : string list = [Directory.GetCurrentDirectory()]
@@ -112,6 +118,15 @@ type UnitTest private (m : MethodBase, info : testInfo, createCompactRepr : bool
     member x.TypeMocks with get() = typeMocks
 
     member x.CompactRepresentations with get() = compactRepresentations
+
+    member x.MethodSequence
+        with set (sequence : methodSequenceElement list) =
+            let reprs = Seq.map MethodSequence.elementToRepr sequence |> Seq.toArray
+            let t = typeof<testInfo>
+            let p = t.GetProperty("methodSequence")
+            p.SetValue(info, reprs)
+
+    member x.InvokableSequence with get() = invokableMethodSequence
 
     member x.DefineTypeMock(name : string) =
         let mock = Mocking.Type(name)

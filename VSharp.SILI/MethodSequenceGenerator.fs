@@ -6,6 +6,7 @@ open System.Reflection
 open FSharpx.Collections
 open Microsoft.FSharp.Collections
 open VSharp
+open VSharp.MethodSequences.MethodSequence
 open VSharp.Core
 open VSharp.Interpreter.IL
 
@@ -35,6 +36,7 @@ type internal IMethodSequenceSearcher =
     abstract AddTarget : cilState option -> cilState -> bool
 
 module MethodSequenceHelpers =
+    // TODO: move to reflection
     let isPrimitive (t : Type) = t.IsPrimitive || t.IsEnum
 
 type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
@@ -199,10 +201,10 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
 
                 let mapArgument (arg : methodSequenceArgument) =
                     match arg with
-                    | Variable(TemporaryLocalVariableKey(typ, index) as key) when MethodSequenceHelpers.isPrimitive typ ->
+                    | Variable(VariableId(typ, index)) when MethodSequenceHelpers.isPrimitive typ ->
+                        let key = TemporaryLocalVariableKey(typ, index)
                         match Memory.ReadLocalVariable primitiveModelState key with
-                        | {term = Concrete(v, t)} as term ->
-                            ConcretePrimitive(t, v)
+                        | {term = Concrete(v, t)} -> ConcretePrimitive(t, v)
                         | _ -> __unreachable__()
                     | _ -> arg
 
@@ -213,8 +215,7 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
                         Call(method, stackKeyOption, mappedArguments)
 
                 // TODO: we need to do something like compose with modelState and state
-
-                let filledSequence = state.currentSequence |> List.map fillHoles
+                let filledSequence = state.currentSequence |> List.map fillHoles |> List.rev
                 target.state.model <- StateModel(modelState, currentTypeModel, Some filledSequence)
                 finishedTargets[target] <- state
                 true
@@ -393,7 +394,8 @@ type internal MethodSequenceGenerator(searcherFactory : Method -> IMethodSequenc
             let result = EvaluationStack.Pop cilState.state.evaluationStack |> fst
             let result = Types.Cast result method.ReturnType
             match state.currentSequence with
-            | Call(lastMethod, Some(resultKey), _) :: _ when lastMethod = method ->
+            | Call(lastMethod, Some(VariableId(resultType, resultIdx)), _) :: _ when lastMethod = method ->
+                let resultKey = TemporaryLocalVariableKey(resultType, resultIdx)
                 Memory.WriteLocalVariable cilState.state resultKey result
             | _ -> __unreachable__()
         | _ -> __unreachable__()
@@ -415,12 +417,12 @@ type internal MethodSequenceGenerator(searcherFactory : Method -> IMethodSequenc
             let name = $"arg_{typ.Name}_{index}"
             let ref = Memory.AllocateTemporaryLocalVariableOfType state.cilState.state name index typ
             let term = Memory.Read state.cilState.state ref
-            (term, Variable <| TemporaryLocalVariableKey(typ, index)), {state with locals = state.locals.Add(typ, index + 1)}
+            (term, Variable <| { typ = typ; index = index }), {state with locals = state.locals.Add(typ, index + 1)}
 
         let useExistingVariable (typ : Type) (index : int) (state : methodSequenceState) =
             let key = TemporaryLocalVariableKey(typ, index)
             let term = Memory.ReadLocalVariable state.cilState.state key
-            (term, Variable <| key), state
+            (term, Variable <| { typ = typ; index = index }), state
 
         let createOutVariable (typ : Type) (state : methodSequenceState) =
             // TODO: check value type case
@@ -428,7 +430,7 @@ type internal MethodSequenceGenerator(searcherFactory : Method -> IMethodSequenc
             let defaultTerm = Memory.AllocateDefaultClass state.cilState.state typ
             let ref = Memory.AllocateTemporaryLocalVariable state.cilState.state index typ defaultTerm
             let term = Memory.Read state.cilState.state ref
-            (term, OutVariable <| TemporaryLocalVariableKey(typ, index)), {state with locals = state.locals.Add(typ, index + 1)}
+            (term, Variable <| { typ = typ; index = index }), {state with locals = state.locals.Add(typ, index + 1)}
 
         let createDefault (typ : Type) (state : methodSequenceState) =
             // TODO: value type case
@@ -476,7 +478,7 @@ type internal MethodSequenceGenerator(searcherFactory : Method -> IMethodSequenc
             let index = if state.locals.ContainsKey returnType then state.locals[returnType] else 0
             let name = $"ret_{returnType.Name}_{index}"
             Memory.AllocateTemporaryLocalVariableOfType state.cilState.state name index returnType |> ignore
-            Some <| TemporaryLocalVariableKey(returnType, index), {state with locals = state.locals.Add(returnType, index + 1)}
+            Some <| { typ = returnType; index = index }, {state with locals = state.locals.Add(returnType, index + 1)}
         else
             None, state
 
@@ -493,7 +495,7 @@ type internal MethodSequenceGenerator(searcherFactory : Method -> IMethodSequenc
                     let folder curState action = action curState
                     let arguments, newState = List.mapFold folder newState argumentsInitializers
                     let argumentTerms, callArguments = arguments |> List.unzip
-                    let resultKey, newState = allocateResultVar methodToCall newState
+                    let resultVar, newState = allocateResultVar methodToCall newState
 
                     let this, argumentTerms =
                         if methodToCall.HasThis then
@@ -503,7 +505,7 @@ type internal MethodSequenceGenerator(searcherFactory : Method -> IMethodSequenc
 
                     let [newCilState] = call newCilState methodToCall this argumentTerms
 
-                    let call = Call(methodToCall, resultKey, callArguments)
+                    let call = Call(methodToCall, resultVar, callArguments)
                     yield
                         {
                           newState with

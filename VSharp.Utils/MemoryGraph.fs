@@ -86,8 +86,10 @@ type public CompactArrayRepr = {
 
 module Serialization =
 
+    let nullTypeRepr = {assemblyName = null; moduleFullyQualifiedName = null; name = null; genericArgs = null}
+
     let rec encodeType ([<MaybeNull>] t : Type) : typeRepr =
-        if t = null then {assemblyName = null; moduleFullyQualifiedName = null; name = null; genericArgs = null}
+        if t = null then nullTypeRepr
         else
             let name, arguments =
                 if t.IsGenericType then
