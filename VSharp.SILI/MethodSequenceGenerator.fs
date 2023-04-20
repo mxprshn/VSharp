@@ -89,16 +89,16 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
     // isInMethod == true
     let statesInMethod = Queue<methodSequenceState>()
 
-    // States to push the target method
-    // isInMethod == false; > 0 elements in sequence; 0 methods to call
+    // States to pop the target method
+    // isInMethod == false; > 0 elements in sequence; exactly 1 (target) method to call
     let statesToFinish = Queue<methodSequenceState>()
 
     // States to pop the next method and start its symbolic execution
-    // isInMethod == false; >= 0 elements in sequence; > 0 methods to call
+    // isInMethod == false; >= 0 elements in sequence; > 1 methods to call
     let statesToPop = Queue<methodSequenceState>()
 
     // States to push a new method (i. e. constructor or setter)
-    // isInMethod == false; >= 0 elements in sequence; >= 0 methods to call
+    // isInMethod == false; >= 0 elements in sequence; >= 1 methods to call
     let statesToPush = Queue<methodSequenceState>()
 
     let mutable counter = 0
@@ -110,11 +110,12 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
         initialCoreState.model <- Memory.EmptyModel baseMethod (typeModel.CreateEmpty())
         let initialCilState = CilStateOperations.makeInitialState baseMethod initialCoreState
         ILInterpreter.InitFunctionFrame initialCoreState baseMethod None None
+        let targetMethodCall = Call targetMethod
         let initialState =
             {
                 cilState = initialCilState
                 isInMethod = false
-                methodsToCall = List.empty
+                methodsToCall = [targetMethodCall]
                 currentSequence = List.empty
                 locals = PersistentHashMap.empty
                 actions = HashSet()
@@ -131,9 +132,9 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
 
     let getNextMethod (state : methodSequenceState) =
         match state.methodsToCall with
-        | [] -> Some(targetMethod :> IMethod)
         | Call method :: _ -> Some method
         | CreateDefaultStruct _ :: _ -> None
+        | _ -> __unreachable__()
 
     let addDefaultCtor (typ : Type) ctors =
         if MethodSequenceHelpers.isStruct typ then
@@ -191,8 +192,9 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
         if statesInMethod.Count = 0 || counter = interleaveAt then
             if statesToFinish.Count > 0 then
                 let stateToFinish = statesToFinish.Dequeue()
+                assert(stateToFinish.methodsToCall.Length = 1)
                 statesToPush.Enqueue stateToFinish
-                let action = Call targetMethod |> Push
+                let action = Pop
                 [action, stateToFinish]
             elif statesToPop.Count > 0 then
                 let stateToPop = statesToPop.Dequeue()
@@ -296,8 +298,9 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
         | { isInMethod = true }, [{ isInMethod = false } as newState] ->
             Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Exited from method:"
             Logger.traceWithTag Logger.methodSequenceSearcherTag $"{newState}"
-            match parent.methodsToCall with
-            | [] -> statesToFinish.Enqueue newState
+            match newState.methodsToCall with
+            | [Call nextMethod] when nextMethod = targetMethod -> statesToFinish.Enqueue newState
+            | [_] | [] -> __unreachable__()
             | _ -> statesToPop.Enqueue newState
         // Inside method
         | { isInMethod = true }, _ ->
@@ -306,13 +309,15 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
             for inMethod in newStates do
                 Logger.traceWithTag Logger.methodSequenceSearcherTag $"{inMethod}"
             List.iter statesInMethod.Enqueue newStates
+        // TODO: merge this case with previous
         // Push or created default struct
         | { isInMethod = false }, [newState] ->
             //assert(not <| List.isEmpty newState.methodsToCall)
             Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Pushed:"
             Logger.traceWithTag Logger.methodSequenceSearcherTag $"{newState}"
             match newState.methodsToCall with
-            | [] -> statesToFinish.Enqueue newState
+            | [Call nextMethod] when nextMethod = targetMethod -> statesToFinish.Enqueue newState
+            | [_] | [] -> __unreachable__()
             | _ -> statesToPop.Enqueue newState
         | _ -> __unreachable__()
 
@@ -540,8 +545,25 @@ type internal MethodSequenceGenerator(searcherFactory : Method -> IMethodSequenc
 
     let call (state : cilState) (method : IMethod) (this : term option) (args : term list) (isTarget : bool) =
         let mapThis (thisTerm : term) =
-            let var = Memory.AllocateTemporaryLocalVariable state.state -1 method.DeclaringType thisTerm
-            var
+            if Types.IsValueType method.DeclaringType then
+                let term = Memory.Read state.state thisTerm
+                Memory.AllocateTemporaryLocalVariable state.state -1 method.DeclaringType term
+            else
+                thisTerm
+
+        let mapByRefParameters (idx : int) (param : term) =
+            let parameterInfo = method.Parameters[idx]
+            // TODO: its partially copy-pasted from SILI, maybe we can share some code
+            if parameterInfo.ParameterType.IsByRef then
+                let elementType = parameterInfo.ParameterType.GetElementType()
+                let term =
+                    if Types.IsValueType elementType then
+                        Memory.Read state.state param
+                    else
+                        param
+                Memory.AllocateTemporaryLocalVariable state.state (-parameterInfo.Position - 1) elementType term
+            else
+                param
 
         match method with
         | :? Method as method ->
@@ -549,7 +571,7 @@ type internal MethodSequenceGenerator(searcherFactory : Method -> IMethodSequenc
                 match this with
                 | Some thisTerm when isTarget -> mapThis thisTerm |> Some
                 | _ -> this
-            interpreter.InitFunctionFrameCIL state method this (Some args)
+            interpreter.InitFunctionFrameCIL state method this (args |> List.mapi mapByRefParameters |> Some)
             interpreter.InitializeStatics state method.DeclaringType List.singleton
         | _ -> __unreachable__()
 
@@ -609,7 +631,8 @@ type internal MethodSequenceGenerator(searcherFactory : Method -> IMethodSequenc
                         else
                             None, argumentTerms
 
-                    let [newCilState] = call newCilState methodToCall this argumentTerms false
+                    let isTargetMethod = remainingMethods.IsEmpty
+                    let [newCilState] = call newCilState methodToCall this argumentTerms isTargetMethod
 
                     let call = methodSequenceElement.Call(methodToCall, resultVar, callArguments)
                     yield

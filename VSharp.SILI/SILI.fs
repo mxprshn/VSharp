@@ -199,7 +199,7 @@ type public SILI(options : SiliOptions) =
             if pi.ParameterType.IsByRef then
                 if Memory.CallStackSize initialState = 0 then
                     Memory.NewStackFrame initialState None []
-                let stackRef = Memory.AllocateTemporaryLocalVariableOfType initialState pi.Name (pi.Position + 1) (pi.ParameterType.GetElementType())
+                let stackRef = Memory.AllocateTemporaryLocalVariableOfType initialState pi.Name (-pi.Position - 1) (pi.ParameterType.GetElementType())
                 Some stackRef
             else
                 None
@@ -239,7 +239,7 @@ type public SILI(options : SiliOptions) =
                     let this =
                         if Types.IsValueType method.DeclaringType then
                             Memory.NewStackFrame initialState None []
-                            Memory.AllocateTemporaryLocalVariableOfType initialState "this" 0 method.DeclaringType
+                            Memory.AllocateTemporaryLocalVariableOfType initialState "this" -1 method.DeclaringType
                         else
                             Memory.MakeSymbolicThis method
                     !!(IsNullReference this) |> AddConstraint initialState
@@ -297,7 +297,7 @@ type public SILI(options : SiliOptions) =
             []
 
     member private x.Forward (s : cilState) =
-        for i in 0..1 do
+        for i in 0..10 do
             methodSequenceGenerator.MakeStep() |> ignore
         let loc = s.currentLoc
         // TODO: update pobs when visiting new methods; use coverageZone
