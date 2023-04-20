@@ -7,6 +7,7 @@ module Logger =
 
     // Tag for state transitions info logs
     let stateTraceTag = "StateTrace"
+    let methodSequenceSearcherTag = "MethodSequence"
 
     let Quiet = 0
     let Critical = 1
@@ -18,7 +19,7 @@ module Logger =
     let mutable currentLogLevel = Error
     let mutable currentTextWriter = Console.Out
     let mutable writeTimestamps = true
-    let mutable tagFilter : string -> bool = fun s -> s <> stateTraceTag
+    let mutable tagFilter : string -> bool = fun s -> s <> methodSequenceSearcherTag
 
     let public configureWriter writer = currentTextWriter <- writer
     let public enableTimestamps value = writeTimestamps <- value

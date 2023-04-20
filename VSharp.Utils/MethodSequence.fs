@@ -23,6 +23,7 @@ type methodSequenceElementRepr = {
     returnTo : int32
     returnType : typeRepr
     arguments : methodSequenceArgumentRepr array
+    isDefaultStructCtor : bool
 }
 
 type variableId = { typ : Type; index : int }
@@ -40,17 +41,21 @@ type methodSequenceArgument =
 
 type methodSequenceElement =
     | Call of IMethod * variableId option * methodSequenceArgument list
+    | CreateDefaultStruct of variableId
 
     override x.ToString() =
         let separator = ", "
         match x with
-        | Call(method, Some ret, args) ->
-            $"{ret} = {method.DeclaringType.Name}.{method.Name}({join separator (args |> List.map (fun a -> a.ToString()))})"
+        | Call(method, Some { typ = typ; index = idx }, args) ->
+            $"{typ.Name}_{idx} = {method.DeclaringType.Name}.{method.Name}({join separator (args |> List.map (fun a -> a.ToString()))})"
         | Call(method, None, args) ->
             $"{method.DeclaringType.Name}.{method.Name}({join separator (args |> List.map (fun a -> a.ToString()))})"
+        | CreateDefaultStruct { typ = typ; index = index } ->
+            $"{typ}_{index} = default({typ})"
 
 type private invokableMethodSequenceElement =
     | Call of MethodBase * variableId option * methodSequenceArgument list
+    | CreateDefaultStruct of variableId
 
 [<AllowNullLiteral>]
 type InvokableMethodSequence(reprs : methodSequenceElementRepr array) =
@@ -61,6 +66,10 @@ type InvokableMethodSequence(reprs : methodSequenceElementRepr array) =
             Default(typ)
         | { index = -1; concrete = obj; isDefault = false; typ = typeRepr } ->
             let typ = Serialization.decodeType typeRepr
+            let obj =
+                if typ.IsByRef && typ.GetElementType().IsEnum then
+                    Enum.ToObject(typ.GetElementType(), obj)
+                else obj
             ConcretePrimitive(typ, obj)
         | { index = index; concrete = null; isDefault = false; typ = typeRepr } ->
             let typ = Serialization.decodeType typeRepr
@@ -68,16 +77,21 @@ type InvokableMethodSequence(reprs : methodSequenceElementRepr array) =
         | _ -> __unreachable__()
 
     let reprToElement (repr : methodSequenceElementRepr) =
-        let methodType = Serialization.decodeType repr.methodType
-        let methodArgs = Array.map Serialization.decodeType repr.methodGenericArgs
-        let methodArgs = if methodArgs.Length = 0 then null else methodArgs
-        let typeArgs = if methodType.GenericTypeArguments.Length = 0 then null else methodType.GenericTypeArguments
-        let method = methodType.Module.ResolveMethod(repr.methodToken, typeArgs, methodArgs)
         let ret =
             if repr.returnTo <> -1 then { typ = Serialization.decodeType repr.returnType; index = repr.returnTo } |> Some
             else None
-        let args = Seq.map reprToArgument repr.arguments |> Seq.toList
-        Call(method, ret, args)
+        match repr with
+        | { isDefaultStructCtor = true } ->
+            CreateDefaultStruct ret.Value
+        | _ ->
+            let methodType = Serialization.decodeType repr.methodType
+            let methodArgs = Array.map Serialization.decodeType repr.methodGenericArgs
+            let methodArgs = if methodArgs.Length = 0 then Type.EmptyTypes else methodArgs
+            let typeArgs = if methodType.GenericTypeArguments.Length = 0 then Type.EmptyTypes else methodType.GenericTypeArguments
+            let method = methodType.Module.ResolveMethod(repr.methodToken, typeArgs, methodArgs)
+            let method = Reflection.concretizeMethodParameters methodType method methodArgs
+            let args = Seq.map reprToArgument repr.arguments |> Seq.toList
+            Call(method, ret, args)
 
     let elements = Seq.map reprToElement reprs |> Seq.toList
 
@@ -89,7 +103,7 @@ type InvokableMethodSequence(reprs : methodSequenceElementRepr array) =
                 if typ.IsValueType && Nullable.GetUnderlyingType(typ) = null then
                     Activator.CreateInstance typ
                 else null
-            | ConcretePrimitive(typ, obj) -> obj
+            | ConcretePrimitive(_, obj) -> obj
             | Variable id ->
                 if locals.ContainsKey id then locals[id]
                 else null
@@ -132,6 +146,12 @@ type InvokableMethodSequence(reprs : methodSequenceElementRepr array) =
                 | Some ret -> locals[ret] <- result
                 | _ -> ()
                 result
+            | CreateDefaultStruct({ typ = typ } as var) ->
+                // TODO: replace with isStruct
+                assert(typ.IsValueType && not <| typ.IsPrimitive)
+                let createdStruct = Activator.CreateInstance typ
+                locals[var] <- createdStruct
+                createdStruct
         let rec invokeRec (sequence : invokableMethodSequenceElement list) =
             match sequence with
             | [lastCall] ->
@@ -143,8 +163,6 @@ type InvokableMethodSequence(reprs : methodSequenceElementRepr array) =
         invokeRec elements
 
 module MethodSequence =
-
-    let (|VariableId|_|) (id : variableId) = Some(id.typ, id.index)
 
     let public argumentToRepr (argument : methodSequenceArgument) =
         match argument with
@@ -162,21 +180,20 @@ module MethodSequence =
                 isDefault = false
                 typ = Serialization.encodeType typ
             }
-        | Variable(VariableId(typ, index)) ->
+        | Variable({ typ = typ; index = idx }) ->
             {
-                index = index
+                index = idx
                 concrete = null
                 isDefault = false
                 typ = Serialization.encodeType typ
             }
-        | _ -> __unreachable__()
 
     let public elementToRepr (element : methodSequenceElement) =
         match element with
         | methodSequenceElement.Call(method, ret, args) ->
             let retIndex, retType =
                 match ret with
-                | Some(VariableId(typ, idx)) ->
+                | Some({ typ = typ; index = idx }) ->
                     idx, Serialization.encodeType typ
                 | None -> -1, Serialization.nullTypeRepr
             {
@@ -186,4 +203,15 @@ module MethodSequence =
                 returnTo = retIndex
                 returnType = retType
                 arguments = List.map argumentToRepr args |> List.toArray
+                isDefaultStructCtor = false
+            }
+        | methodSequenceElement.CreateDefaultStruct({ typ = typ; index = idx }) ->
+            {
+                methodToken = -1
+                methodType = Serialization.nullTypeRepr
+                methodGenericArgs = Array.empty
+                returnTo = idx
+                returnType = Serialization.encodeType typ
+                arguments = Array.empty
+                isDefaultStructCtor = true
             }

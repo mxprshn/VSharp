@@ -4,6 +4,7 @@ open System
 open FSharpx.Collections
 open VSharp
 open VSharp.Core
+open VSharp.Core.Memory
 
 module API =
     let ConfigureSolver solver =
@@ -273,6 +274,17 @@ module API =
         let EmptyStack = EvaluationStack.empty
 
     module public Memory =
+
+        let IsConcreteMemoryEnabled() =
+            match memoryMode with
+            | ConcreteMemory -> true
+            | SymbolicMemory -> false
+
+        let EnableConcreteMemory value =
+            let newMode =
+                if value then ConcreteMemory else SymbolicMemory
+            memoryMode <- newMode
+
         let EmptyState() = Memory.makeEmpty false false
 
         let EmptyModelState() = Memory.makeEmpty false true

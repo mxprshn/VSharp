@@ -117,13 +117,16 @@ type public SILI(options : SiliOptions) =
     let reportState reporter isError cilState message =
         try
             searcher.Remove cilState
-            if cilState.history |> Seq.exists (not << statistics.IsBasicBlockCoveredByTest)
+            match cilState.state.model with
+            | StateModel(_, _, Some methods) ->
+                Console.WriteLine $"Found sequence for:\n{Print.PrintPC cilState.state.pc}"
+                let separator = "\n"
+                Console.WriteLine $"{methods |> List.map (fun c -> c.ToString()) |> join separator}"
+            | _ ->
+                Console.WriteLine $"!!!!!!! No sequence found for PC:\n{Print.PrintPC cilState.state.pc}"
+            Console.WriteLine()
+            if true //cilState.history |> Seq.exists (not << statistics.IsBasicBlockCoveredByTest)
             then
-                match cilState.state.model with
-                | StateModel(_, _, Some methods) ->
-                    let separator = "\n"
-                    Console.WriteLine $"\n{methods |> List.map (fun c -> c.ToString()) |> join separator}"
-                | _ -> Console.WriteLine "\nNo sequence found"
                 let hasException =
                     match cilState.state.exceptionsRegister with
                     | Unhandled _ -> true
@@ -136,7 +139,7 @@ type public SILI(options : SiliOptions) =
                         if entryMethod.DeclaringType.IsValueType || methodHasByRefParameter entryMethod
                         then Memory.ForcePopFrames (callStackSize - 2) cilState.state
                         else Memory.ForcePopFrames (callStackSize - 1) cilState.state
-                if not isError || statistics.EmitError cilState message
+                if true//not isError || statistics.EmitError cilState message
                 then
                     match TestGenerator.state2test isError entryMethod cilState message with
                     | Some test ->
@@ -418,11 +421,11 @@ type public SILI(options : SiliOptions) =
         match options.explorationMode with
         | TestCoverageMode(coverageZone, _) ->
             Application.setCoverageZone (inCoverageZone coverageZone entryMethods)
-            if options.stopOnCoverageAchieved > 0 then
+            (*if options.stopOnCoverageAchieved > 0 then
                 let checkCoverage() =
                     let cov = statistics.GetApproximateCoverage entryMethods
                     cov >= uint options.stopOnCoverageAchieved
-                isCoverageAchieved <- checkCoverage
+                isCoverageAchieved <- checkCoverage*)
         | StackTraceReproductionMode _ -> __notImplemented__()
 
     member x.Interpret (isolated : MethodBase seq) (entryPoints : (MethodBase * string[]) seq) (onFinished : Action<UnitTest>)

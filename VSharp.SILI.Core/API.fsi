@@ -213,6 +213,9 @@ module API =
         val EmptyStack : evaluationStack
 
     module public Memory =
+        val EnableConcreteMemory : bool -> unit
+        val IsConcreteMemoryEnabled : unit -> bool
+
         val EmptyState : unit -> state
         val EmptyModelState : unit -> state
         val CopyState : state -> state

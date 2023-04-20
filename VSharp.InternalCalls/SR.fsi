@@ -65,3 +65,9 @@ module internal SR =
 
     [<Implements("System.String System.SR.get_ConcurrentDictionary_ConcurrencyLevelMustBeNegative()")>]
     val internal concurrencyLevelMustBeNegative : state -> term list -> term
+
+    [<Implements("System.String System.SR.get_ArgumentOutOfRange_NeedNonNegNum()")>]
+    val internal get_ArgumentOutOfRange_NeedNonNegNum : state -> term list -> term
+
+    [<Implements("System.String System.SR.get_ArgumentOutOfRange_SmallCapacity()")>]
+    val internal get_ArgumentOutOfRange_SmallCapacity : state -> term list -> term

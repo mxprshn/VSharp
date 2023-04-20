@@ -58,6 +58,20 @@ public class TestClass3
     public int GetTotalValue() => _value + _testClass.GetValue();
 }
 
+public class ClassWithStructCtor
+{
+    private readonly int _value;
+    private readonly TestStruct _testStruct;
+
+    public ClassWithStructCtor(int value, TestStruct testStruct)
+    {
+        _value = value;
+        _testStruct = testStruct;
+    }
+
+    public int GetTotalValue() => _value + _testStruct.Value;
+}
+
 [TestSvmFixture]
 public static class MethodSequences
 {
@@ -230,10 +244,31 @@ public static class MethodSequences
         return false;
     }
 
+    // Получаются цепочки из нескольких одинаковых конструкторов сразу
     [TestSvm]
     public static bool ListSmokeTest(List<int> list)
     {
         if (list.Capacity > 5)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    // ок ли, что если guided searcher запаузил стейт, а других стейтов нет, а время есть, то мы не
+    // запускаем этот стейт снова
+    [TestSvm(guidedMode: false)]
+    public static void ListSmokeTest2(int i)
+    {
+        var list = new List<int>();
+        list.Capacity = i;
+    }
+
+    [TestSvm]
+    public static bool CtorWithStruct(ClassWithStructCtor obj)
+    {
+        if (obj.GetTotalValue() > 5)
         {
             return true;
         }
@@ -251,6 +286,21 @@ public class TestClass4
     public bool InstanceMethod()
     {
         if (Value > 55)
+        {
+            return true;
+        }
+
+        return false;
+    }
+}
+
+[TestSvmFixture]
+public struct TestStruct2
+{
+    [TestSvm]
+    public bool StructThisTest(TestClass testClass)
+    {
+        if (testClass.GetValue() > 55)
         {
             return true;
         }
