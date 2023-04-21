@@ -13,7 +13,6 @@ using NUnit.Framework.Internal;
 using NUnit.Framework.Internal.Builders;
 using NUnit.Framework.Internal.Commands;
 using VSharp.Interpreter.IL;
-using VSharp.Solver;
 using VSharp.TestRenderer;
 
 namespace VSharp.Test
@@ -261,7 +260,11 @@ namespace VSharp.Test
                         releaseBranches: _releaseBranches,
                         maxBufferSize: 128,
                         checkAttributes: _checkAttributes,
-                        stopOnCoverageAchieved: _expectedCoverage ?? -1
+                        stopOnCoverageAchieved: _expectedCoverage ?? -1,
+                        methodSequenceStepsShare : 10u,
+                        generateTestsWithoutSequence : true,
+                        extraMethodSequenceSearchTimeout : 0,
+                        maxMethodSequenceLength : uint.MaxValue
                     );
                     using var explorer = new SILI(_options);
 

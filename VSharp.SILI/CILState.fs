@@ -227,6 +227,11 @@ module internal CilStateOperations =
     let setBasicBlockIsVisited (cilState : cilState) (loc : codeLocation) =
         cilState.history <- Set.add loc cilState.history
 
+    let hasMethodSequence cilState =
+        match cilState.state.model with
+        | StateModel(_, _, Some _) -> true
+        | _ -> false
+
     // ------------------------------- Helper functions for cilState and state interaction -------------------------------
 
     let stateOf (cilState : cilState) = cilState.state

@@ -39,4 +39,9 @@ type SiliOptions = {
     maxBufferSize : int
     checkAttributes : bool
     stopOnCoverageAchieved : int
+
+    methodSequenceStepsShare : uint
+    generateTestsWithoutSequence : bool
+    extraMethodSequenceSearchTimeout : int
+    maxMethodSequenceLength : uint
 }

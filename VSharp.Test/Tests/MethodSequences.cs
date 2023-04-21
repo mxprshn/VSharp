@@ -15,6 +15,18 @@ public struct TestStruct
     public int Value { get; set; }
 }
 
+public struct TestStruct3
+{
+    private int _value;
+
+    public TestStruct3(int value)
+    {
+        _value = value;
+    }
+
+    public int GetValue() => _value;
+}
+
 public class TestClass
 {
     private readonly int _value;
@@ -269,6 +281,17 @@ public static class MethodSequences
     public static bool CtorWithStruct(ClassWithStructCtor obj)
     {
         if (obj.GetTotalValue() > 5)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    [TestSvm]
+    public static bool StructNonDefaultConstructor(TestStruct3 struct3)
+    {
+        if (struct3.GetValue() > 5)
         {
             return true;
         }

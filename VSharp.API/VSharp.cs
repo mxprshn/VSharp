@@ -8,7 +8,6 @@ using System.Reflection;
 using System.Text;
 using VSharp.CSharpUtils;
 using VSharp.Interpreter.IL;
-using VSharp.Solver;
 
 namespace VSharp
 {
@@ -178,7 +177,11 @@ namespace VSharp
                     releaseBranches: true,
                     maxBufferSize: 128,
                     checkAttributes: true,
-                    stopOnCoverageAchieved: 100
+                    stopOnCoverageAchieved: 100,
+                    methodSequenceStepsShare : 10u,
+                    generateTestsWithoutSequence : true,
+                    extraMethodSequenceSearchTimeout : 0,
+                    maxMethodSequenceLength : UInt32.MaxValue
                 );
 
             using var explorer = new SILI(options);

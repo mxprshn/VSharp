@@ -16,6 +16,9 @@ open VSharp.Solver
 
 type public SILI(options : SiliOptions) =
 
+    let isMethodSequenceGenerationEnabled =
+        options.methodSequenceStepsShare > 0u || options.extraMethodSequenceSearchTimeout <> 0
+
     let hasTimeout = options.timeout > 0
     let timeout =
         if not hasTimeout then Double.PositiveInfinity
@@ -46,7 +49,8 @@ type public SILI(options : SiliOptions) =
         | SymbolicMode -> false
     let interpreter = ILInterpreter(isConcolicMode)
 
-    let methodSequenceGenerator = MethodSequenceGenerator((fun method -> MethodSequenceSearcher(method, Int32.MaxValue)), interpreter)
+    let methodSequenceExplorer : IMethodSequenceExplorer = MethodSequenceExplorer(interpreter)
+    let methodSequenceSearcher : IMethodSequenceSearcher = MethodSequenceSearcher(options.maxMethodSequenceLength)
 
     let mutable reportFinished : cilState -> unit = fun _ -> internalfail "reporter not configured!"
     let mutable reportError : cilState -> string -> unit = fun _ -> internalfail "reporter not configured!"
@@ -59,6 +63,8 @@ type public SILI(options : SiliOptions) =
     let mutable isCoverageAchieved : unit -> bool = always false
 
     let mutable concolicMachines : Dictionary<cilState, ClientMachine> = Dictionary<cilState, ClientMachine>()
+
+    let statesWaitingForSequence = Queue<cilState * (unit -> unit)>()
 
     let () =
         if options.visualize then
@@ -114,17 +120,27 @@ type public SILI(options : SiliOptions) =
             dfsSearcher.Init <| searcher.States()
             searcher <- bidirectionalSearcher
 
+    let printSequence cilState =
+        match cilState.state.model with
+        | StateModel(_, _, Some methods) ->
+            Console.WriteLine $"Found sequence for:\n{Print.PrintPC cilState.state.pc}"
+            let separator = "\n"
+            Console.WriteLine $"{methods |> List.map (fun c -> c.ToString()) |> join separator}"
+            Console.WriteLine()
+        | _ ->
+            Console.WriteLine $"No sequence found for PC:\n{Print.PrintPC cilState.state.pc}"
+            Console.WriteLine()
+
+    let reportWaitingStates() =
+        while statesWaitingForSequence.Count > 0 do
+            let state, action = statesWaitingForSequence.Dequeue()
+            if options.generateTestsWithoutSequence || hasMethodSequence state then
+                printSequence state
+                action()
+
     let reportState reporter isError cilState message =
         try
             searcher.Remove cilState
-            match cilState.state.model with
-            | StateModel(_, _, Some methods) ->
-                Console.WriteLine $"Found sequence for:\n{Print.PrintPC cilState.state.pc}"
-                let separator = "\n"
-                Console.WriteLine $"{methods |> List.map (fun c -> c.ToString()) |> join separator}"
-            | _ ->
-                Console.WriteLine $"!!!!!!! No sequence found for PC:\n{Print.PrintPC cilState.state.pc}"
-            Console.WriteLine()
             if true //cilState.history |> Seq.exists (not << statistics.IsBasicBlockCoveredByTest)
             then
                 let hasException =
@@ -141,13 +157,20 @@ type public SILI(options : SiliOptions) =
                         else Memory.ForcePopFrames (callStackSize - 1) cilState.state
                 if true//not isError || statistics.EmitError cilState message
                 then
-                    match TestGenerator.state2test isError entryMethod cilState message with
-                    | Some test ->
-                        statistics.TrackFinished cilState
-                        reporter test
-                        if isCoverageAchieved() then
-                            isStopped <- true
-                    | None -> ()
+                    let generateTest() =
+                        match TestGenerator.state2test isError entryMethod cilState message with
+                        | Some test ->
+                            statistics.TrackFinished cilState
+                            reporter test
+                            if isCoverageAchieved() then
+                                isStopped <- true
+                        | None -> ()
+                    if isMethodSequenceGenerationEnabled && not <| hasMethodSequence cilState then
+                        Console.WriteLine "Enqueue state to report later\n"
+                        statesWaitingForSequence.Enqueue(cilState, generateTest)
+                    else
+                        printSequence cilState
+                        generateTest()
         with :? InsufficientInformationException as e ->
             cilState.iie <- Some e
             reportStateIncomplete cilState
@@ -193,6 +216,14 @@ type public SILI(options : SiliOptions) =
             action.Invoke(method, e)
 
     let wrapOnCrash (action : Action<Exception>) (e : Exception) = action.Invoke e
+
+    let makeMethodSequenceSearcherStep() =
+        match methodSequenceSearcher.Pick() with
+        | [] -> ()
+        | actions ->
+            for action, state in actions do
+                let newStates = methodSequenceExplorer.ExecuteAction action state
+                methodSequenceSearcher.Update state newStates |> ignore
 
     static member private AllocateByRefParameters initialState (method : Method) =
         let allocateIfByRef (pi : ParameterInfo) =
@@ -249,7 +280,8 @@ type public SILI(options : SiliOptions) =
             let cilStates = ILInterpreter.CheckDisallowNullAssumptions cilState method false
             assert (List.length cilStates = 1)
             let [cilState] = cilStates
-            methodSequenceGenerator.GetSequenceOrEnqueue None cilState |> ignore
+            if isMethodSequenceGenerationEnabled then
+                methodSequenceSearcher.AddTarget None cilState |> ignore
             match options.executionMode with
             | ConcolicMode -> List.singleton cilState
             | SymbolicMode -> interpreter.InitializeStatics cilState method.DeclaringType List.singleton
@@ -287,9 +319,9 @@ type public SILI(options : SiliOptions) =
                 Memory.WriteLocalVariable modelState (ParameterKey argsParameter) argsForModel
             Memory.InitializeStaticMembers state method.DeclaringType
             let initialState = makeInitialState method state
-            if not hasConcreteMainArguments then
+            if isMethodSequenceGenerationEnabled && not hasConcreteMainArguments then
                 // TODO: do something with concrete arguments?
-                methodSequenceGenerator.GetSequenceOrEnqueue None initialState |> ignore
+                methodSequenceSearcher.AddTarget None initialState |> ignore
             [initialState]
         with
         | e ->
@@ -297,8 +329,9 @@ type public SILI(options : SiliOptions) =
             []
 
     member private x.Forward (s : cilState) =
-        for i in 0..10 do
-            methodSequenceGenerator.MakeStep() |> ignore
+        if isMethodSequenceGenerationEnabled then
+            for _ in 1u..options.methodSequenceStepsShare do
+                makeMethodSequenceSearcherStep()
         let loc = s.currentLoc
         // TODO: update pobs when visiting new methods; use coverageZone
         statistics.TrackStepForward s
@@ -330,8 +363,8 @@ type public SILI(options : SiliOptions) =
                 concolicMachines.Add(cilState', machine)
         Application.moveState loc s (Seq.cast<_> newStates)
         statistics.TrackFork s newStates
-        if not <| List.isEmpty newStates then
-            (s :: newStates) |> Seq.iter (methodSequenceGenerator.GetSequenceOrEnqueue (Some s) >> ignore)
+        if isMethodSequenceGenerationEnabled && not <| List.isEmpty newStates then
+            (s :: newStates) |> Seq.iter (methodSequenceSearcher.AddTarget (Some s) >> ignore)
         searcher.UpdateStates s newStates
 
     member private x.Backward p' s' =
@@ -377,7 +410,6 @@ type public SILI(options : SiliOptions) =
 
     member private x.AnswerPobs initialStates =
         statistics.ExplorationStarted()
-
         // For backward compatibility. TODO: remove main pobs at all
         let mainPobs = []
         Application.spawnStates (Seq.cast<_> initialStates)
@@ -401,6 +433,7 @@ type public SILI(options : SiliOptions) =
 //            reportFinished.Invoke machine.State
         | SymbolicMode ->
             x.BidirectionalSymbolicExecution()
+            reportWaitingStates()
         searcher.Statuses() |> Seq.iter (fun (pob, status) ->
             match status with
             | pobStatus.Unknown ->
@@ -418,6 +451,7 @@ type public SILI(options : SiliOptions) =
         SolverInteraction.setOnSolverStopped statistics.SolverStopped
         AcquireBranches()
         isCoverageAchieved <- always false
+        statesWaitingForSequence.Clear()
         match options.explorationMode with
         | TestCoverageMode(coverageZone, _) ->
             Application.setCoverageZone (inCoverageZone coverageZone entryMethods)

@@ -44,15 +44,18 @@ type internal methodSequenceState =
         sb <- sb.Append "]"
         sb.ToString()
 
-type internal methodSequenceSearcherResult =
+type internal methodSequenceResult =
     | NotExist
     | Exists
     | Unknown
 
 type internal IMethodSequenceSearcher =
     abstract Pick : unit -> (explorerAction * methodSequenceState) list
-    abstract Update : methodSequenceState -> methodSequenceState list -> unit
-    abstract AddTarget : cilState option -> cilState -> bool
+    abstract Update : methodSequenceState -> methodSequenceState list -> cilState list
+    abstract AddTarget : cilState option -> cilState -> methodSequenceResult
+
+type internal IMethodSequenceExplorer =
+    abstract ExecuteAction : explorerAction -> methodSequenceState -> methodSequenceState list
 
 module MethodSequenceHelpers =
 
@@ -71,12 +74,10 @@ module MethodSequenceHelpers =
         currentId <- currentId + 1u
         currentId
 
-type private sequenceLengthStateComparer() =
-    interface IComparer<methodSequenceState> with
-        override x.Compare(one, another) =
-            one.currentSequence.Length.CompareTo(another.currentSequence.Length)
+// TODO: если нет таргетов, то и не pick-ать?
+type MethodSequenceSearcher(maxSequenceLength : uint) =
 
-type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
+    let targetMethods = HashSet<IMethod>()
 
     let targets = List<cilState>()
 
@@ -104,7 +105,7 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
     let mutable counter = 0
     let interleaveAt = 10
 
-    do
+    let enqueueInitialState targetMethod =
         let initialCoreState = Memory.EmptyModelState()
         let baseMethod = Application.getMethod Loader.MethodSequenceBase
         initialCoreState.model <- Memory.EmptyModel baseMethod (typeModel.CreateEmpty())
@@ -123,8 +124,14 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
             }
         statesToPush.Enqueue initialState
 
+    let canHaveDefaultThis (method : Method) =
+        not method.HasThis || method.DeclaringType.IsValueType
+
+    let isAvailableInPublicApi (method : Method) =
+        method.IsPublic && (method.DeclaringType.IsPublic || method.DeclaringType.IsNestedPublic)
+
     let canPushOn (state : methodSequenceState) =
-        state.currentSequence.Length + state.methodsToCall.Length <= maxSequenceLength
+        uint (state.currentSequence.Length + state.methodsToCall.Length) <= maxSequenceLength
 
     let publicFlags =
         let (|||) = Microsoft.FSharp.Core.Operators.(|||)
@@ -230,7 +237,7 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
             [Forward, stateToForward]
 
     let checkTarget (target : cilState) (state : methodSequenceState) =
-        assert(state.cilState.currentLoc = { method = targetMethod; offset = 0<offsets> })
+        assert(state.cilState.currentLoc.offset = 0<offsets> && targetMethods.Contains state.cilState.currentLoc.method)
         let wlp = Memory.WLP state.cilState.state target.state.pc
         let prevPc = state.cilState.state.pc
         state.cilState.state.pc <- wlp
@@ -280,7 +287,8 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
     let update (parent : methodSequenceState) (newStates : methodSequenceState list) =
         match parent, newStates with
         // Finished (entered target method)
-        | { isInMethod = false }, _ when List.forall (fun newState -> newState.isInMethod && newState.cilState.currentLoc.method = targetMethod) newStates ->
+        // TODO: targetMethods.Contains is too мягкое condition
+        | { isInMethod = false }, _ when List.forall (fun newState -> newState.isInMethod && targetMethods.Contains newState.cilState.currentLoc.method) newStates ->
             Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Finished:"
             for finished in newStates do
                 Logger.traceWithTag Logger.methodSequenceSearcherTag $"{finished}"
@@ -288,20 +296,23 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
             // TODO: more effectively?
             let finishedTargets = targets |> Seq.filter (fun tgt -> newStates |> List.exists (checkTarget tgt)) |> Seq.toList
             finishedTargets |> List.iter (targets.Remove >> ignore)
+            finishedTargets
         // Entered new method
         | { isInMethod = false }, _ when List.forall (fun newState -> newState.isInMethod) newStates ->
             Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Entered new method:"
             for entered in newStates do
                 Logger.traceWithTag Logger.methodSequenceSearcherTag $"{entered}"
             List.iter statesInMethod.Enqueue newStates
+            []
         // Just exited from method
         | { isInMethod = true }, [{ isInMethod = false } as newState] ->
             Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Exited from method:"
             Logger.traceWithTag Logger.methodSequenceSearcherTag $"{newState}"
             match newState.methodsToCall with
-            | [Call nextMethod] when nextMethod = targetMethod -> statesToFinish.Enqueue newState
+            | [Call nextMethod] when targetMethods.Contains nextMethod -> statesToFinish.Enqueue newState
             | [_] | [] -> __unreachable__()
             | _ -> statesToPop.Enqueue newState
+            []
         // Inside method
         | { isInMethod = true }, _ ->
             assert(List.forall (fun newState -> newState.isInMethod) newStates)
@@ -309,6 +320,7 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
             for inMethod in newStates do
                 Logger.traceWithTag Logger.methodSequenceSearcherTag $"{inMethod}"
             List.iter statesInMethod.Enqueue newStates
+            []
         // TODO: merge this case with previous
         // Push or created default struct
         | { isInMethod = false }, [newState] ->
@@ -316,47 +328,13 @@ type MethodSequenceSearcher(targetMethod : Method, maxSequenceLength : int) =
             Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Pushed:"
             Logger.traceWithTag Logger.methodSequenceSearcherTag $"{newState}"
             match newState.methodsToCall with
-            | [Call nextMethod] when nextMethod = targetMethod -> statesToFinish.Enqueue newState
+            | [Call nextMethod] when targetMethods.Contains nextMethod -> statesToFinish.Enqueue newState
             | [_] | [] -> __unreachable__()
             | _ -> statesToPop.Enqueue newState
+            []
         | _ -> __unreachable__()
 
-    let addTarget (parent : cilState option) (target : cilState) =
-        if targets.Contains target then false
-        else
-            let check (cilState : cilState) =
-                if finishedTargets.ContainsKey cilState then
-                    checkTarget target finishedTargets[cilState]
-                else false
-            let isFound =
-                match parent with
-                | Some parent ->
-                    check parent || (parent <> target && check target)
-                | _ -> check target
-            if not isFound then
-                // TODO: !!!!! Don't check previously checked states (and don't check states which we shouldn't check)
-                if finishedStates |> Seq.exists (checkTarget target) |> not then
-                    targets.Add target
-                    false
-                else true
-            else true
-
-    interface IMethodSequenceSearcher with
-        member x.Pick() = pick()
-        member x.Update parent newStates = update parent newStates
-        member x.AddTarget parent target = addTarget parent target
-
-type internal MethodSequenceGenerator(searcherFactory : Method -> IMethodSequenceSearcher, interpreter : ILInterpreter) =
-
-    let searchers = Dictionary<Method, IMethodSequenceSearcher>()
-
-    let isAvailableInPublicApi (method : Method) =
-        method.IsPublic && (method.DeclaringType.IsPublic || method.DeclaringType.IsNestedPublic)
-
-    let canHaveDefaultThis (method : Method) =
-        not method.HasThis || method.DeclaringType.IsValueType
-
-    // TODO: Consider Nullable<>
+        // TODO: Consider Nullable<>
     let tryConvertSolverModelToSequence (cilState : cilState) =
         let targetMethod = CilStateOperations.entryMethodOf cilState
         if not <| canHaveDefaultThis targetMethod then false
@@ -429,6 +407,43 @@ type internal MethodSequenceGenerator(searcherFactory : Method -> IMethodSequenc
                     cilState.state.model <- StateModel(modelState, typeModel, Some [call])
                     true
 
+    let addTarget (parent : cilState option) (target : cilState) =
+        match target.state.model with
+        | StateModel(_, _, Some _) -> Exists
+        | _ ->
+            let targetMethod = CilStateOperations.entryMethodOf target
+            if not <| isAvailableInPublicApi targetMethod then NotExist
+            elif tryConvertSolverModelToSequence target then Exists
+            else
+                if targetMethods.Add targetMethod then
+                    enqueueInitialState targetMethod
+                    targets.Add target
+                    Unknown
+                elif targets.Contains target then Unknown
+                else
+                    let check (cilState : cilState) =
+                        if finishedTargets.ContainsKey cilState then
+                            checkTarget target finishedTargets[cilState]
+                        else false
+                    let isFound =
+                        match parent with
+                        | Some parent ->
+                            check parent || (parent <> target && check target)
+                        | _ -> check target
+                    if not isFound then
+                        // TODO: !!!!! Don't check previously checked states (and don't check states which we shouldn't check)
+                        if finishedStates |> Seq.exists (checkTarget target) |> not then
+                            targets.Add target
+                            Unknown
+                        else Exists
+                    else Exists
+
+    interface IMethodSequenceSearcher with
+        member x.Pick() = pick()
+        member x.Update parent newStates = update parent newStates
+        member x.AddTarget parent target = addTarget parent target
+
+type internal MethodSequenceExplorer(interpreter : ILInterpreter) =
     let isExitingFromMethod (state : methodSequenceState) =
         let baseMethod = Application.getMethod Loader.MethodSequenceBase
         match state.cilState.ipStack with
@@ -502,9 +517,13 @@ type internal MethodSequenceGenerator(searcherFactory : Method -> IMethodSequenc
         let createOutVariable (typ : Type) (state : methodSequenceState) =
             // TODO: check value type case
             let index = if state.locals.ContainsKey typ then state.locals[typ] else 0
-            let defaultTerm = Memory.AllocateDefaultClass state.cilState.state typ
-            let ref = Memory.AllocateTemporaryLocalVariable state.cilState.state index typ defaultTerm
-            let term = Memory.Read state.cilState.state ref
+            let term =
+                if MethodSequenceHelpers.isStruct typ then
+                    Memory.AllocateTemporaryLocalVariable state.cilState.state index typ (Memory.DefaultOf typ)
+                else
+                    let defaultTerm = Memory.AllocateDefaultClass state.cilState.state typ
+                    let ref = Memory.AllocateTemporaryLocalVariable state.cilState.state index typ defaultTerm
+                    Memory.Read state.cilState.state ref
             (term, Variable <| { typ = typ; index = index }), {state with locals = state.locals.Add(typ, index + 1)}
 
         let createDefault (typ : Type) (state : methodSequenceState) =
@@ -552,18 +571,21 @@ type internal MethodSequenceGenerator(searcherFactory : Method -> IMethodSequenc
                 thisTerm
 
         let mapByRefParameters (idx : int) (param : term) =
-            let parameterInfo = method.Parameters[idx]
-            // TODO: its partially copy-pasted from SILI, maybe we can share some code
-            if parameterInfo.ParameterType.IsByRef then
-                let elementType = parameterInfo.ParameterType.GetElementType()
-                let term =
-                    if Types.IsValueType elementType then
-                        Memory.Read state.state param
-                    else
-                        param
-                Memory.AllocateTemporaryLocalVariable state.state (-parameterInfo.Position - 1) elementType term
-            else
+            if not isTarget then
                 param
+            else
+                let parameterInfo = method.Parameters[idx]
+                // TODO: its partially copy-pasted from SILI, maybe we can share some code
+                if parameterInfo.ParameterType.IsByRef then
+                    let elementType = parameterInfo.ParameterType.GetElementType()
+                    let term =
+                        if Types.IsValueType elementType then
+                            Memory.Read state.state param
+                        else
+                            param
+                    Memory.AllocateTemporaryLocalVariable state.state (-parameterInfo.Position - 1) elementType term
+                else
+                    param
 
         match method with
         | :? Method as method ->
@@ -677,32 +699,5 @@ type internal MethodSequenceGenerator(searcherFactory : Method -> IMethodSequenc
         finally
             Memory.EnableConcreteMemory wasConcreteMemoryEnabled
 
-    // Parent is already changed!
-    member x.GetSequenceOrEnqueue (parent : cilState option) (cilState : cilState) =
-        match cilState.state.model with
-        | StateModel(_, _, Some _) -> Exists
-        | _ ->
-            let targetMethod = CilStateOperations.entryMethodOf cilState
-            if not <| isAvailableInPublicApi targetMethod then NotExist
-            elif tryConvertSolverModelToSequence cilState then Exists
-            else
-                if not <| searchers.ContainsKey targetMethod then
-                    searchers[targetMethod] <- searcherFactory targetMethod
-                if searchers[targetMethod].AddTarget parent cilState then
-                    Exists
-                else Unknown
-
-    member x.MakeStep() =
-        // TODO: switch between methods
-        if searchers.Count > 0 then
-            let searcher = Seq.head searchers.Values
-            let actions = searcher.Pick()
-            match actions with
-            | [] -> false
-            | _ ->
-                for action, state in actions do
-                    let newStates = executeAction action state
-                    searcher.Update state newStates
-                true
-        else
-            false
+    interface IMethodSequenceExplorer with
+        override x.ExecuteAction action state = executeAction action state
