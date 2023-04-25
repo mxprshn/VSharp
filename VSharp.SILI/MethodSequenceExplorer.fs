@@ -197,46 +197,48 @@ type MethodSequenceSearcher(maxSequenceLength : uint) =
             Seq.tryFind (not << state.actions.Contains)
 
     let pick() =
-        counter <- (counter + 1) % interleaveAt
-        if statesInMethod.Count = 0 || counter = interleaveAt then
-            if statesToFinish.Count > 0 then
-                let stateToFinish = statesToFinish.Dequeue()
-                assert(stateToFinish.methodsToCall.Length = 1)
-                statesToPush.Enqueue stateToFinish
-                let action = Pop
-                [action, stateToFinish]
-            elif statesToPop.Count > 0 then
-                let stateToPop = statesToPop.Dequeue()
-                statesToPush.Enqueue stateToPop
-                [Pop, stateToPop]
-            else
-                let rec tryGetPush() =
-                    if statesToPush.Count = 0 then []
-                    else
-                        // TODO: what if we can't push? We lose the state?
-                        let next = statesToPush.Dequeue()
-                        let pushes =
-                            seq {
-                                match tryGetThisConstructorToPush next with
-                                | None ->
-                                    match tryGetConstructorPush next with
+        if targets.Count = 0 then []
+        else
+            counter <- (counter + 1) % interleaveAt
+            if statesInMethod.Count = 0 || counter = interleaveAt then
+                if statesToFinish.Count > 0 then
+                    let stateToFinish = statesToFinish.Dequeue()
+                    assert(stateToFinish.methodsToCall.Length = 1)
+                    statesToPush.Enqueue stateToFinish
+                    let action = Pop
+                    [action, stateToFinish]
+                elif statesToPop.Count > 0 then
+                    let stateToPop = statesToPop.Dequeue()
+                    statesToPush.Enqueue stateToPop
+                    [Pop, stateToPop]
+                else
+                    let rec tryGetPush() =
+                        if statesToPush.Count = 0 then []
+                        else
+                            // TODO: what if we can't push? We lose the state?
+                            let next = statesToPush.Dequeue()
+                            let pushes =
+                                seq {
+                                    match tryGetThisConstructorToPush next with
+                                    | None ->
+                                        match tryGetConstructorPush next with
+                                        | None -> ()
+                                        | Some action -> yield action, next
+                                    | Some action -> yield action, next
+                                    match tryGetPropertySetterPush next with
                                     | None -> ()
                                     | Some action -> yield action, next
-                                | Some action -> yield action, next
-                                match tryGetPropertySetterPush next with
-                                | None -> ()
-                                | Some action -> yield action, next
-                            }
-                            |> Seq.toList
-                        match pushes with
-                        | [] -> tryGetPush()
-                        | _ ->
-                            statesToPush.Enqueue next
-                            pushes
-                tryGetPush()
-        else
-            let stateToForward = statesInMethod.Dequeue()
-            [Forward, stateToForward]
+                                }
+                                |> Seq.toList
+                            match pushes with
+                            | [] -> tryGetPush()
+                            | _ ->
+                                statesToPush.Enqueue next
+                                pushes
+                    tryGetPush()
+            else
+                let stateToForward = statesInMethod.Dequeue()
+                [Forward, stateToForward]
 
     let checkTarget (target : cilState) (state : methodSequenceState) =
         assert(state.cilState.currentLoc.offset = 0<offsets> && targetMethods.Contains state.cilState.currentLoc.method)
