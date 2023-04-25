@@ -207,6 +207,7 @@ type MethodWithBody internal (m : MethodBase) =
         // TODO: make it private!
         override x.MethodBase : MethodBase = m
         override x.MetadataToken : int = metadataToken
+        override x.IsVirtual : bool = isVirtual
 
     member private x.Descriptor = desc
 

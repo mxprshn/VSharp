@@ -18,3 +18,4 @@ type IMethod =
     abstract SubstituteTypeVariables : (Type -> Type) -> IMethod
     abstract MethodBase : System.Reflection.MethodBase
     abstract MetadataToken : int
+    abstract IsVirtual : bool

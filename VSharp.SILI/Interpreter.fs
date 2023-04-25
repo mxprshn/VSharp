@@ -1068,7 +1068,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
                 true
         else false
 
-    member private x.InlineMethodBaseCallIfNeeded (method : Method) (cilState : cilState) k =
+    member x.InlineMethodBaseCallIfNeeded (method : Method) (cilState : cilState) k =
         // [NOTE] Asserting correspondence between ips and frames
         assert(currentMethod cilState = method && currentOffset cilState = Some 0<offsets>)
         let fullMethodName, args, thisOption = x.GetFullMethodNameArgsAndThis cilState.state method
@@ -1298,6 +1298,8 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
         let hasThis = calledMethod.HasThis && opCode <> OpCodes.Newobj
         let this = if hasThis then pop cilState |> Some else None
         this, args
+
+
 
     member x.Call (m : Method) offset (cilState : cilState) =
         let calledMethod = resolveMethodFromMetadata m (offset + Offset.from OpCodes.Call.Size) |> Application.getMethod

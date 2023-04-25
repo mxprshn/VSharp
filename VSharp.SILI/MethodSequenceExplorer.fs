@@ -1,8 +1,9 @@
-﻿namespace VSharp.MethodSequences
+namespace VSharp.MethodSequences
 
 open System
 open System.Collections.Generic
 open System.Reflection
+open System.Reflection.Emit
 open System.Text
 open FSharpx.Collections
 open Microsoft.FSharp.Collections
@@ -31,7 +32,7 @@ type internal methodSequenceState =
     }
 
     override x.ToString() =
-        let mutable sb = StringBuilder($"[{x.id} inMethod: {x.isInMethod}\n")
+        let mutable sb = StringBuilder($"[{x.id} current method: {x.cilState.currentLoc.method}\n")
         for called in x.currentSequence do
             sb <- sb.AppendLine $"\t{called}"
         sb <- sb.AppendLine "\t ---"
@@ -164,6 +165,7 @@ type MethodSequenceSearcher(maxSequenceLength : uint) =
     let tryGetConstructorPush (state : methodSequenceState) =
         // TODO: use some smarter logic here
         // In fact we need to look at all methods to call
+        // TODO: what about constructors with default parameters?
         match getNextMethod state with
         | None -> None
         | Some nextMethod ->
@@ -285,10 +287,11 @@ type MethodSequenceSearcher(maxSequenceLength : uint) =
             state.cilState.state.pc <- prevPc
 
     let update (parent : methodSequenceState) (newStates : methodSequenceState list) =
+        Logger.traceWithTag Logger.methodSequenceSearcherTag $"In method: {statesInMethod.Count}, to push: {statesToPush.Count}, to pop: {statesToPop.Count}, finished: {finishedStates.Count}"
         match parent, newStates with
         // Finished (entered target method)
         // TODO: targetMethods.Contains is too мягкое condition
-        | { isInMethod = false }, _ when List.forall (fun newState -> newState.isInMethod && targetMethods.Contains newState.cilState.currentLoc.method) newStates ->
+        | _, _ when List.forall (fun newState -> newState.isInMethod && targetMethods.Contains newState.cilState.currentLoc.method) newStates ->
             Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Finished:"
             for finished in newStates do
                 Logger.traceWithTag Logger.methodSequenceSearcherTag $"{finished}"
@@ -444,6 +447,12 @@ type MethodSequenceSearcher(maxSequenceLength : uint) =
         member x.AddTarget parent target = addTarget parent target
 
 type internal MethodSequenceExplorer(interpreter : ILInterpreter) =
+
+    let wrappersModuleBuilder =
+        let wrappersAssemblyName = "MethodSequenceWrappers"
+        let assemblyBuilder = AssemblyManager.DefineDynamicAssembly(AssemblyName wrappersAssemblyName, AssemblyBuilderAccess.Run)
+        assemblyBuilder.DefineDynamicModule wrappersAssemblyName
+
     let isExitingFromMethod (state : methodSequenceState) =
         let baseMethod = Application.getMethod Loader.MethodSequenceBase
         match state.cilState.ipStack with
@@ -476,10 +485,11 @@ type internal MethodSequenceExplorer(interpreter : ILInterpreter) =
         match EvaluationStack.Length cilState.state.evaluationStack with
         | 0 -> ()
         | 1 ->
-            let result = EvaluationStack.Pop cilState.state.evaluationStack |> fst
-            let result = Types.Cast result method.ReturnType
+            let result, newStack = EvaluationStack.Pop cilState.state.evaluationStack
+            cilState.state.evaluationStack <- newStack
+            let result = Types.Cast result (if method.IsConstructor then method.DeclaringType else method.ReturnType)
             match state.currentSequence with
-            | methodSequenceElement.Call(lastMethod, Some({ typ = resultType; index = resultIdx }), _) :: _ when lastMethod = method ->
+            | methodSequenceElement.Call(_, Some({ typ = resultType; index = resultIdx }), _) :: _->
                 let resultKey = TemporaryLocalVariableKey(resultType, resultIdx)
                 Memory.WriteLocalVariable cilState.state resultKey result
             | _ -> __unreachable__()
@@ -542,37 +552,78 @@ type internal MethodSequenceExplorer(interpreter : ILInterpreter) =
                         yield createDefault unwrapped
                     // TODO: check IsAssignable
                     // TODO: value type constructor
-                    if isThis && method.IsConstructor then
-                        yield createOutVariable unwrapped
-                    elif state.locals.ContainsKey unwrapped then
+                    (*if isThis && method.IsConstructor then
+                        yield createOutVariable unwrapped*)
+                    if state.locals.ContainsKey unwrapped then
                         for i in 0..(state.locals[unwrapped] - 1) -> useExistingVariable unwrapped i (isThis || typ.IsByRef)
             } |> Seq.toList
 
         let rec getPossibleArgumentsForTypes (types : Type list) isThis =
             match types with
-            | [] -> []
+            | [] -> [[]]
             | [currentType] ->
                 getPossibleArgumentsForType currentType isThis |> List.map List.singleton
             | currentType :: remainingTypes ->
                 List.allPairs (getPossibleArgumentsForType currentType isThis) (getPossibleArgumentsForTypes remainingTypes false) |>
                 List.map (fun (current, ss) -> current :: ss)
         let thisAndParameters = seq {
-            if method.HasThis then yield method.DeclaringType
+            if method.HasThis && not method.IsConstructor then yield method.DeclaringType
             for pi in method.Parameters -> pi.ParameterType
         }
+        // TODO: is HasThis enough?
         getPossibleArgumentsForTypes (thisAndParameters |> Seq.toList) method.HasThis
 
-    let call (state : cilState) (method : IMethod) (this : term option) (args : term list) (isTarget : bool) =
+    let getWrapperMethod (targetMethod : IMethod) =
+        let wrapperTypeName = $"Wrapper-{targetMethod.DeclaringType.MetadataToken}-{targetMethod.MetadataToken}"
+        let wrapperMethodName = "Call"
+        let existingType = wrappersModuleBuilder.GetType(wrapperTypeName, false, false)
+        let typ =
+            if existingType <> null then existingType
+            else
+                let typeBuilder = wrappersModuleBuilder.DefineType wrapperTypeName
+                let (|||) = Microsoft.FSharp.Core.Operators.(|||)
+                let methodBuilder = typeBuilder.DefineMethod(wrapperMethodName, MethodAttributes.Public ||| MethodAttributes.Static)
+                // TODO: move to utils
+                let thisAndParameters =
+                    seq {
+                        if targetMethod.HasThis && not targetMethod.IsConstructor then yield targetMethod.DeclaringType
+                        yield! (targetMethod.Parameters |> Array.map (fun pi -> pi.ParameterType))
+                    }
+                    |> Seq.toArray
+                methodBuilder.SetParameters thisAndParameters
+                let returnType = if targetMethod.IsConstructor then targetMethod.DeclaringType else targetMethod.ReturnType
+                methodBuilder.SetReturnType returnType
+                let generator = methodBuilder.GetILGenerator()
+                for i in 0..(thisAndParameters.Length - 1) do
+                    generator.Emit(OpCodes.Ldarg, i)
+                // TODO: won't work with generics
+                // TODO: won't work with arrays
+                if targetMethod.IsConstructor then
+                    let ctorInfo = targetMethod.MethodBase :?> ConstructorInfo
+                    generator.Emit(OpCodes.Newobj, ctorInfo)
+                else
+                    let opCode =
+                        if targetMethod.IsVirtual then OpCodes.Callvirt
+                        else OpCodes.Call
+                    let methodInfo = targetMethod.MethodBase :?> MethodInfo
+                    generator.Emit(opCode, methodInfo)
+
+                generator.Emit OpCodes.Ret
+                typeBuilder.CreateType()
+        typ.GetMethod wrapperMethodName |> Application.getMethod
+
+    let call20 (state : cilState) (method : IMethod) (this : term option) (args : term list) (isTarget : bool) =
+        let wrapper = getWrapperMethod method
+
         let mapThis (thisTerm : term) =
-            if Types.IsValueType method.DeclaringType then
+            if isTarget && Types.IsValueType method.DeclaringType then
                 let term = Memory.Read state.state thisTerm
                 Memory.AllocateTemporaryLocalVariable state.state -1 method.DeclaringType term
-            else
-                thisTerm
+            else thisTerm
 
-        let mapByRefParameters (idx : int) (param : term) =
+        let mapArgument (idx : int) (argTerm : term) =
             if not isTarget then
-                param
+                argTerm
             else
                 let parameterInfo = method.Parameters[idx]
                 // TODO: its partially copy-pasted from SILI, maybe we can share some code
@@ -580,25 +631,24 @@ type internal MethodSequenceExplorer(interpreter : ILInterpreter) =
                     let elementType = parameterInfo.ParameterType.GetElementType()
                     let term =
                         if Types.IsValueType elementType then
-                            Memory.Read state.state param
+                            Memory.Read state.state argTerm
                         else
-                            param
+                            argTerm
                     Memory.AllocateTemporaryLocalVariable state.state (-parameterInfo.Position - 1) elementType term
                 else
-                    param
+                    argTerm
 
-        match method with
-        | :? Method as method ->
-            let this =
+        let args =
+            seq {
                 match this with
-                | Some thisTerm when isTarget -> mapThis thisTerm |> Some
-                | _ -> this
-            interpreter.InitFunctionFrameCIL state method this (args |> List.mapi mapByRefParameters |> Some)
-            interpreter.InitializeStatics state method.DeclaringType List.singleton
-        | _ -> __unreachable__()
+                | Some thisTerm -> yield mapThis thisTerm
+                | None -> ()
+                yield! args |> List.mapi mapArgument
+            } |> Seq.toList
+        interpreter.InitFunctionFrameCIL state wrapper None (Some args)
 
     let allocateResultVar (method : IMethod) (state : methodSequenceState) =
-        let returnType = method.ReturnType
+        let returnType = if method.IsConstructor then method.DeclaringType else method.ReturnType
         if returnType <> typeof<Void> && not <| MethodSequenceHelpers.isPrimitive returnType then
             let index = if state.locals.ContainsKey returnType then state.locals[returnType] else 0
             let name = $"ret_{returnType.Name}_{index}"
@@ -611,6 +661,7 @@ type internal MethodSequenceExplorer(interpreter : ILInterpreter) =
         match state.methodsToCall with
         | [] -> __unreachable__()
         | CreateDefaultStruct typ :: remainingMethods ->
+            // TODO: don't we need static ctor? Seems like no
             let newCoreState = Memory.CopyState state.cilState.state
             let newCilState = { state.cilState with state = newCoreState; id = CilStateOperations.getNextStateId() }
             let newState = {state with cilState = newCilState}
@@ -648,13 +699,14 @@ type internal MethodSequenceExplorer(interpreter : ILInterpreter) =
                     let resultVar, newState = allocateResultVar methodToCall newState
 
                     let this, argumentTerms =
-                        if methodToCall.HasThis then
+                        // TODO: move this condition to function?
+                        if methodToCall.HasThis && not methodToCall.IsConstructor then
                             List.head argumentTerms |> Some, List.tail argumentTerms
                         else
                             None, argumentTerms
 
                     let isTargetMethod = remainingMethods.IsEmpty
-                    let [newCilState] = call newCilState methodToCall this argumentTerms isTargetMethod
+                    call20 newCilState methodToCall this argumentTerms isTargetMethod
 
                     let call = methodSequenceElement.Call(methodToCall, resultVar, callArguments)
                     yield

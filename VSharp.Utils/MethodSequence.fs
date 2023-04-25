@@ -112,7 +112,7 @@ type InvokableMethodSequence(reprs : methodSequenceElementRepr array) =
             | Call(method, ret, args) ->
                 let outIndices = List<int>()
                 let this, argObjsArray, argsArray =
-                    if Reflection.hasThis method then
+                    if Reflection.hasThis method && not method.IsConstructor then
                         let argsArray = List.tail args |> List.toArray
                         let this = List.head args |> argToObj
                         let argObjsArray =
@@ -133,8 +133,8 @@ type InvokableMethodSequence(reprs : methodSequenceElementRepr array) =
                     else
                         method.Invoke(this, argObjsArray)
                 if method.IsConstructor then
-                    match args.Head with
-                    | Variable id ->
+                    match ret with
+                    | Some id ->
                         locals[id] <- result
                     | _ -> __unreachable__()
                 for i in outIndices do
