@@ -32,7 +32,7 @@ type internal methodSequenceState =
     }
 
     override x.ToString() =
-        let mutable sb = StringBuilder($"[{x.id} current method: {x.cilState.currentLoc.method}\n")
+        let mutable sb = StringBuilder($"[{x.id} actions: {Seq.toList x.actions}\n")
         for called in x.currentSequence do
             sb <- sb.AppendLine $"\t{called}"
         sb <- sb.AppendLine "\t ---"
@@ -58,7 +58,7 @@ type internal IMethodSequenceSearcher =
 type internal IMethodSequenceExplorer =
     abstract ExecuteAction : explorerAction -> methodSequenceState -> methodSequenceState list
 
-module MethodSequenceHelpers =
+module internal MethodSequenceHelpers =
 
     let mutable private currentId = 0u
 
@@ -74,6 +74,22 @@ module MethodSequenceHelpers =
     let getNextStateId() =
         currentId <- currentId + 1u
         currentId
+
+    let getAllMethods (state : methodSequenceState) =
+        let getElementMethod (element : methodSequenceElement) =
+            match element with
+            | methodSequenceElement.Call(method, _, _) -> Some method
+            | _ -> None
+
+        let getActionMethod (action : methodSequenceAction) =
+            match action with
+            | Call method -> Some method
+            | _ -> None
+
+        seq {
+            yield! state.currentSequence |> List.choose getElementMethod
+            yield! state.methodsToCall |> List.choose getActionMethod
+        }
 
 // TODO: если нет таргетов, то и не pick-ать?
 type MethodSequenceSearcher(maxSequenceLength : uint) =
@@ -101,7 +117,7 @@ type MethodSequenceSearcher(maxSequenceLength : uint) =
 
     // States to push a new method (i. e. constructor or setter)
     // isInMethod == false; >= 0 elements in sequence; >= 1 methods to call
-    let statesToPush = Queue<methodSequenceState>()
+    let statesToPush = PriorityQueue<methodSequenceState, int>()
 
     let mutable counter = 0
     let interleaveAt = 10
@@ -123,7 +139,7 @@ type MethodSequenceSearcher(maxSequenceLength : uint) =
                 actions = HashSet()
                 id = MethodSequenceHelpers.getNextStateId()
             }
-        statesToPush.Enqueue initialState
+        statesToPush.Enqueue(initialState, 1)
 
     let canHaveDefaultThis (method : Method) =
         not method.HasThis || method.DeclaringType.IsValueType
@@ -144,16 +160,23 @@ type MethodSequenceSearcher(maxSequenceLength : uint) =
         | CreateDefaultStruct _ :: _ -> None
         | _ -> __unreachable__()
 
+    let getConstructors (typ : Type) =
+        if typ = typeof<decimal> then
+            let ctor = typeof<decimal>.GetConstructor([|typeof<int>; typeof<int>; typeof<int>; typeof<bool>; typeof<byte>|])
+            [ctor]
+        else
+            typ.GetConstructors publicFlags |> Array.toList
+
     let addDefaultCtor (typ : Type) ctors =
-        if MethodSequenceHelpers.isStruct typ then
+        if MethodSequenceHelpers.isStruct typ && typ <> typeof<decimal> then
             Seq.cons (methodSequenceAction.CreateDefaultStruct typ |> Push) ctors
         else ctors
 
     let tryGetThisConstructorToPush (state : methodSequenceState) =
         match getNextMethod state with
-        | Some nextMethod when nextMethod.HasThis && not <| state.locals.ContainsKey nextMethod.DeclaringType ->
+        | Some nextMethod when nextMethod.HasThis && not nextMethod.IsConstructor && not <| state.locals.ContainsKey nextMethod.DeclaringType ->
             let typ = nextMethod.DeclaringType
-            nextMethod.DeclaringType.GetConstructors publicFlags |>
+            getConstructors typ |>
                 Seq.sortBy (fun ctor -> ctor.GetParameters().Length) |>
                 Seq.map Application.getMethod |>
                 Seq.cast<IMethod> |>
@@ -170,7 +193,7 @@ type MethodSequenceSearcher(maxSequenceLength : uint) =
         | None -> None
         | Some nextMethod ->
             let getConstructorPushes (typ : Type) =
-                typ.GetConstructors publicFlags |>
+                getConstructors typ |>
                     Seq.sortBy (fun ctor -> ctor.GetParameters().Length) |>
                     Seq.map Application.getMethod |>
                     Seq.cast<IMethod> |>
@@ -186,6 +209,11 @@ type MethodSequenceSearcher(maxSequenceLength : uint) =
                 Seq.tryFind (state.actions.Contains >> not)
 
     let tryGetPropertySetterPush (state : methodSequenceState) =
+        let canPushSetter (state : methodSequenceState) (setter : IMethod) =
+            let currentSettersCount = MethodSequenceHelpers.getAllMethods state |> Seq.filter (fun m -> m = setter) |> Seq.length
+            let localsCount = if state.locals.ContainsKey setter.DeclaringType then state.locals[setter.DeclaringType] else 0
+            currentSettersCount < localsCount
+
         state.locals.Iterator() |>
             Seq.map fst |>
             Seq.collect (fun typ -> typ.GetProperties publicFlags) |>
@@ -193,6 +221,7 @@ type MethodSequenceSearcher(maxSequenceLength : uint) =
             Seq.filter (fun m -> m <> null) |>
             Seq.map Application.getMethod |>
             Seq.cast<IMethod> |>
+            Seq.filter (canPushSetter state) |>
             Seq.map (Call >> Push) |>
             Seq.tryFind (not << state.actions.Contains)
 
@@ -201,15 +230,17 @@ type MethodSequenceSearcher(maxSequenceLength : uint) =
         else
             counter <- (counter + 1) % interleaveAt
             if statesInMethod.Count = 0 || counter = interleaveAt then
+                Logger.traceWithTag Logger.methodSequenceSearcherTag $"To pop: {statesToPop.Count}; To push: {statesToPush.Count}; To finish {statesToFinish.Count}; Finished: {finishedStates.Count}"
                 if statesToFinish.Count > 0 then
                     let stateToFinish = statesToFinish.Dequeue()
                     assert(stateToFinish.methodsToCall.Length = 1)
-                    statesToPush.Enqueue stateToFinish
-                    let action = Pop
-                    [action, stateToFinish]
+                    statesToPush.Enqueue(stateToFinish, stateToFinish.currentSequence.Length + stateToFinish.methodsToCall.Length)
+                    Logger.traceWithTag Logger.methodSequenceSearcherTag $"PICK (TO FINISH): \n{stateToFinish}"
+                    [Pop, stateToFinish]
                 elif statesToPop.Count > 0 then
                     let stateToPop = statesToPop.Dequeue()
-                    statesToPush.Enqueue stateToPop
+                    statesToPush.Enqueue(stateToPop, stateToPop.currentSequence.Length + stateToPop.methodsToCall.Length)
+                    Logger.traceWithTag Logger.methodSequenceSearcherTag $"PICK (TO POP): \n{stateToPop}"
                     [Pop, stateToPop]
                 else
                     let rec tryGetPush() =
@@ -233,9 +264,11 @@ type MethodSequenceSearcher(maxSequenceLength : uint) =
                             match pushes with
                             | [] -> tryGetPush()
                             | _ ->
-                                statesToPush.Enqueue next
+                                statesToPush.Enqueue(next, next.currentSequence.Length + next.methodsToCall.Length)
                                 pushes
-                    tryGetPush()
+                    let push = tryGetPush()
+                    Logger.traceWithTag Logger.methodSequenceSearcherTag $"PICK (TO PUSH): \n{snd push.Head} ({push.Length})"
+                    push
             else
                 let stateToForward = statesInMethod.Dequeue()
                 [Forward, stateToForward]
@@ -288,54 +321,32 @@ type MethodSequenceSearcher(maxSequenceLength : uint) =
         finally
             state.cilState.state.pc <- prevPc
 
+    let finish state =
+        Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Finished:"
+        Logger.traceWithTag Logger.methodSequenceSearcherTag $"{state}"
+        finishedStates.Add state
+        // TODO: more effectively?
+        let finishedTargets = targets |> Seq.filter (fun tgt -> checkTarget tgt state) |> Seq.toList
+        finishedTargets |> List.iter (targets.Remove >> ignore)
+        finishedTargets
+
     let update (parent : methodSequenceState) (newStates : methodSequenceState list) =
-        Logger.traceWithTag Logger.methodSequenceSearcherTag $"In method: {statesInMethod.Count}, to push: {statesToPush.Count}, to pop: {statesToPop.Count}, finished: {finishedStates.Count}"
-        match parent, newStates with
-        // Finished (entered target method)
-        // TODO: targetMethods.Contains is too мягкое condition
-        | _, _ when List.forall (fun newState -> newState.isInMethod && targetMethods.Contains newState.cilState.currentLoc.method) newStates ->
-            Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Finished:"
-            for finished in newStates do
-                Logger.traceWithTag Logger.methodSequenceSearcherTag $"{finished}"
-            newStates |> List.iter (finishedStates.Add >> ignore)
-            // TODO: more effectively?
-            let finishedTargets = targets |> Seq.filter (fun tgt -> newStates |> List.exists (checkTarget tgt)) |> Seq.toList
-            finishedTargets |> List.iter (targets.Remove >> ignore)
-            finishedTargets
-        // Entered new method
-        | { isInMethod = false }, _ when List.forall (fun newState -> newState.isInMethod) newStates ->
-            Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Entered new method:"
-            for entered in newStates do
-                Logger.traceWithTag Logger.methodSequenceSearcherTag $"{entered}"
+        match newStates with
+        | [newState] when targetMethods.Contains newState.cilState.currentLoc.method ->
+            assert(parent.isInMethod && newState.isInMethod)
+            finish newState
+        | [{ isInMethod = false } as newState] ->
+            match newState.methodsToCall with
+            | [Call nextMethod] when targetMethods.Contains nextMethod ->
+                statesToFinish.Enqueue newState
+            | _ :: _ :: _ ->
+                statesToPop.Enqueue newState
+            | _ -> __unreachable__()
+            []
+        | _ :: _ when List.forall (fun newState -> newState.isInMethod) newStates ->
             List.iter statesInMethod.Enqueue newStates
             []
-        // Just exited from method
-        | { isInMethod = true }, [{ isInMethod = false } as newState] ->
-            Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Exited from method:"
-            Logger.traceWithTag Logger.methodSequenceSearcherTag $"{newState}"
-            match newState.methodsToCall with
-            | [Call nextMethod] when targetMethods.Contains nextMethod -> statesToFinish.Enqueue newState
-            | [_] | [] -> __unreachable__()
-            | _ -> statesToPop.Enqueue newState
-            []
-        // Inside method
-        | { isInMethod = true }, _ ->
-            assert(List.forall (fun newState -> newState.isInMethod) newStates)
-            Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Inside method:"
-            for inMethod in newStates do
-                Logger.traceWithTag Logger.methodSequenceSearcherTag $"{inMethod}"
-            List.iter statesInMethod.Enqueue newStates
-            []
-        // TODO: merge this case with previous
-        // Push or created default struct
-        | { isInMethod = false }, [newState] ->
-            //assert(not <| List.isEmpty newState.methodsToCall)
-            Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Pushed:"
-            Logger.traceWithTag Logger.methodSequenceSearcherTag $"{newState}"
-            match newState.methodsToCall with
-            | [Call nextMethod] when targetMethods.Contains nextMethod -> statesToFinish.Enqueue newState
-            | [_] | [] -> __unreachable__()
-            | _ -> statesToPop.Enqueue newState
+        | [] ->
             []
         | _ -> __unreachable__()
 
@@ -463,21 +474,21 @@ type internal MethodSequenceExplorer(interpreter : ILInterpreter) =
         | _ -> false
 
     let makeStepInsideMethod (state : methodSequenceState) =
-        //try
-        seq {
-            let goodStates, _, _ = interpreter.ExecuteOneInstruction state.cilState
-            let goodStates, _ = goodStates |> List.partition CilStateOperations.isExecutable
-            match goodStates with
-            | s'::goodStates when LanguagePrimitives.PhysicalEquality state.cilState s' ->
-                yield state
-                for goodState in goodStates -> { state with cilState = goodState }
-            | _ ->
-                for goodState in goodStates -> { state with cilState = goodState }
-        } |> Seq.toList
-        (*with
-        | e ->
+        try
+            seq {
+                let goodStates, _, _ = interpreter.ExecuteOneInstruction state.cilState
+                let goodStates, _ = goodStates |> List.partition CilStateOperations.isExecutable
+                match goodStates with
+                | s'::goodStates when LanguagePrimitives.PhysicalEquality state.cilState s' ->
+                    yield state
+                    for goodState in goodStates -> { state with cilState = goodState }
+                | _ ->
+                    for goodState in goodStates -> { state with cilState = goodState }
+            } |> Seq.toList
+        with
+        | :? UnknownMethodException as e ->
             Console.WriteLine $"Method sequence generator exception: {e.Message}"
-            []*)
+            []
 
     let exitFromMethod (state : methodSequenceState) =
         let cilState = state.cilState
@@ -572,8 +583,7 @@ type internal MethodSequenceExplorer(interpreter : ILInterpreter) =
             if method.HasThis && not method.IsConstructor then yield method.DeclaringType
             for pi in method.Parameters -> pi.ParameterType
         }
-        // TODO: is HasThis enough?
-        getPossibleArgumentsForTypes (thisAndParameters |> Seq.toList) method.HasThis
+        getPossibleArgumentsForTypes (thisAndParameters |> Seq.toList) (method.HasThis && not method.IsConstructor)
 
     let getWrapperMethod (targetMethod : IMethod) =
         let wrapperTypeName = $"Wrapper-{targetMethod.DeclaringType.MetadataToken}-{targetMethod.MetadataToken}"
@@ -724,6 +734,7 @@ type internal MethodSequenceExplorer(interpreter : ILInterpreter) =
             } |> Seq.toList
 
     let executeAction (action : explorerAction) (state : methodSequenceState) =
+        // TODO: Try enable concrete memory with unmarshalling
         let wasConcreteMemoryEnabled = Memory.IsConcreteMemoryEnabled()
         Memory.EnableConcreteMemory false
         try
@@ -731,23 +742,21 @@ type internal MethodSequenceExplorer(interpreter : ILInterpreter) =
             | Forward ->
                 assert state.isInMethod
                 if isExitingFromMethod state then
-                    Logger.traceWithTag Logger.methodSequenceSearcherTag "[Generator] Exit from current method:"
-                    Logger.traceWithTag Logger.methodSequenceSearcherTag $"{state}"
+                    (*Logger.traceWithTag Logger.methodSequenceSearcherTag "[Generator] Exit from current method:"
+                    Logger.traceWithTag Logger.methodSequenceSearcherTag $"{state}"*)
                     [exitFromMethod state]
                 else
-                    Logger.traceWithTag Logger.methodSequenceSearcherTag "[Generator] Make step in method:"
-                    Logger.traceWithTag Logger.methodSequenceSearcherTag $"{state}"
+                    (*Logger.traceWithTag Logger.methodSequenceSearcherTag "[Generator] Make step in method:"
+                    Logger.traceWithTag Logger.methodSequenceSearcherTag $"{state}"*)
                     makeStepInsideMethod state
             | Pop ->
-                assert(not <| state.actions.Contains action)
-                Logger.traceWithTag Logger.methodSequenceSearcherTag "[Generator] Pop:"
-                Logger.traceWithTag Logger.methodSequenceSearcherTag $"{state}"
-                state.actions.Add action |> ignore
+                (*Logger.traceWithTag Logger.methodSequenceSearcherTag "[Generator] Pop:"
+                Logger.traceWithTag Logger.methodSequenceSearcherTag $"{state}"*)
                 pop state
             | Push method ->
                 assert(not <| state.actions.Contains action)
-                Logger.traceWithTag Logger.methodSequenceSearcherTag $"[Generator] Push {method}:"
-                Logger.traceWithTag Logger.methodSequenceSearcherTag $"{state}"
+                (*Logger.traceWithTag Logger.methodSequenceSearcherTag $"[Generator] Push {method}:"
+                Logger.traceWithTag Logger.methodSequenceSearcherTag $"{state}"*)
                 state.actions.Add action |> ignore
                 [{ state with actions = HashSet(); methodsToCall = method :: state.methodsToCall; id = MethodSequenceHelpers.getNextStateId() }]
         finally

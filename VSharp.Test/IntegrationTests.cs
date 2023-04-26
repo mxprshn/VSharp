@@ -261,9 +261,9 @@ namespace VSharp.Test
                         maxBufferSize: 128,
                         checkAttributes: _checkAttributes,
                         stopOnCoverageAchieved: _expectedCoverage ?? -1,
-                        methodSequenceStepsShare : 10u,
+                        methodSequenceStepsShare : 1u,
                         generateTestsWithoutSequence : true,
-                        extraMethodSequenceSearchTimeout : 0,
+                        extraMethodSequenceSearchTimeout : 10,
                         maxMethodSequenceLength : uint.MaxValue
                     );
                     using var explorer = new SILI(_options);

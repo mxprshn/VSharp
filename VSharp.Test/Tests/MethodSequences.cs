@@ -298,6 +298,17 @@ public static class MethodSequences
 
         return false;
     }
+
+    [TestSvm]
+    public static bool Decimals(decimal val)
+    {
+        if (val > 10_000_000)
+        {
+            return true;
+        }
+
+        return false;
+    }
 }
 
 [TestSvmFixture]

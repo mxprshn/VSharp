@@ -123,25 +123,18 @@ type public SILI(options : SiliOptions) =
     let printSequence cilState =
         match cilState.state.model with
         | StateModel(_, _, Some methods) ->
-            Console.WriteLine $"Found sequence for:\n{Print.PrintPC cilState.state.pc}"
+            Console.WriteLine $"Found sequence for:\n{Print.PrintPC cilState.state.pc}; location: {cilState.currentLoc}"
             let separator = "\n"
             Console.WriteLine $"{methods |> List.map (fun c -> c.ToString()) |> join separator}"
             Console.WriteLine()
         | _ ->
-            Console.WriteLine $"No sequence found for PC:\n{Print.PrintPC cilState.state.pc}"
+            Console.WriteLine $"No sequence found for PC:\n{Print.PrintPC cilState.state.pc}; location: {cilState.currentLoc}"
             Console.WriteLine()
-
-    let reportWaitingStates() =
-        while statesWaitingForSequence.Count > 0 do
-            let state, action = statesWaitingForSequence.Dequeue()
-            if options.generateTestsWithoutSequence || hasMethodSequence state then
-                printSequence state
-                action()
 
     let reportState reporter isError cilState message =
         try
             searcher.Remove cilState
-            if true //cilState.history |> Seq.exists (not << statistics.IsBasicBlockCoveredByTest)
+            if cilState.history |> Seq.exists (not << statistics.IsBasicBlockCoveredByTest)
             then
                 let hasException =
                     match cilState.state.exceptionsRegister with
@@ -155,12 +148,14 @@ type public SILI(options : SiliOptions) =
                         if entryMethod.DeclaringType.IsValueType || methodHasByRefParameter entryMethod
                         then Memory.ForcePopFrames (callStackSize - 2) cilState.state
                         else Memory.ForcePopFrames (callStackSize - 1) cilState.state
-                if true//not isError || statistics.EmitError cilState message
+                if not isError || statistics.EmitError cilState message
                 then
+                    // TODO: we can update statistics or not according to settings
+                    statistics.TrackFinished cilState
                     let generateTest() =
                         match TestGenerator.state2test isError entryMethod cilState message with
                         | Some test ->
-                            statistics.TrackFinished cilState
+                            //statistics.TrackFinished cilState
                             reporter test
                             if isCoverageAchieved() then
                                 isStopped <- true
@@ -224,6 +219,20 @@ type public SILI(options : SiliOptions) =
             for action, state in actions do
                 let newStates = methodSequenceExplorer.ExecuteAction action state
                 methodSequenceSearcher.Update state newStates |> ignore
+
+    let reportWaitingStates() =
+        let generateSequences() =
+            while true do makeMethodSequenceSearcherStep()
+
+        if options.extraMethodSequenceSearchTimeout > 0 then
+            let task = Task.Run generateSequences
+            task.Wait(options.extraMethodSequenceSearchTimeout * 1000) |> ignore
+
+        while statesWaitingForSequence.Count > 0 do
+            let state, action = statesWaitingForSequence.Dequeue()
+            if options.generateTestsWithoutSequence || hasMethodSequence state then
+                printSequence state
+                action()
 
     static member private AllocateByRefParameters initialState (method : Method) =
         let allocateIfByRef (pi : ParameterInfo) =
@@ -502,8 +511,8 @@ type public SILI(options : SiliOptions) =
                         x.AnswerPobs initialStates
                 let explorationTask = Task.Run(initializeAndStart)
                 let finished =
-                    if hasTimeout then explorationTask.Wait(int (timeout * 1.5))
-                    else explorationTask.Wait(); true
+                    (*if hasTimeout then explorationTask.Wait(int (timeout * 1.5))
+                    else *)explorationTask.Wait(); true
                 if not finished then Logger.warning "Execution was cancelled due to timeout"
             with
             | :? AggregateException as e ->
