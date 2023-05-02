@@ -88,7 +88,7 @@ type GuidedSearcher(maxBound, threshold : uint, baseSearcher : IForwardSearcher,
     let violatesRecursionLevel s =
         let optCurrLoc = tryCurrentLoc s
         match optCurrLoc with
-        | Some currLoc ->
+        | Some currLoc when currLoc.method.CFG.IsSome ->
             let cfg = currLoc.method.ForceCFG
             let onVertex = cfg.IsBasicBlockStart currLoc.offset
             let level = if PersistentDict.contains currLoc s.level then s.level.[currLoc] else 0u
