@@ -36,7 +36,7 @@ type BasicBlock (method: MethodWithBody, startOffset: offset) =
     let associatedStates = HashSet<IGraphTrackableState>()
     let incomingCFGEdges = HashSet<BasicBlock>()
     let incomingCallEdges = HashSet<BasicBlock>()
-    let outgoingEdges = Dictionary<int<terminalSymbol>,HashSet<BasicBlock>>()
+    let outgoingEdges = Dictionary<int<terminalSymbol>, HashSet<BasicBlock>>()
     member this.StartOffset
         with get () = startOffset
         and set v = startOffset <- v
@@ -297,8 +297,7 @@ and CfgInfo internal (method : MethodWithBody) =
         findDistanceFrom (bb :> ICfgNode)
     member this.HasSiblings offset =
         let basicBlock = resolveBasicBlock offset
-        basicBlock.StartOffset = offset
-        && basicBlock.HasSiblings
+        basicBlock.HasSiblings
 
 and Method internal (m : MethodBase) as this =
     inherit MethodWithBody(m)
@@ -345,8 +344,7 @@ and Method internal (m : MethodBase) as this =
         member this.OutgoingEdges with get () =
             let edges = HashSet<_>()
             for bb in this.ForceCFG.EntryPoint.IncomingCallEdges do
-                let added = edges.Add bb.Method
-                assert added
+                edges.Add bb.Method |> ignore
             edges |> Seq.cast<IReversedCallGraphNode>
 
     static member val internal AttributesZone : Method -> bool = fun _ -> true with get, set
@@ -405,7 +403,9 @@ and
     [<CustomEquality; CustomComparison>]
     public codeLocation = {offset : offset; method : Method}
         with
-        member x.BasicBlock = x.method.ForceCFG.ResolveBasicBlock x.offset
+        member x.BasicBlock =
+            Option.map (fun (cfg : CfgInfo) -> cfg.ResolveBasicBlock x.offset) x.method.CFG
+        member x.ForceBasicBlock with get() = x.method.ForceCFG.ResolveBasicBlock x.offset
         override x.Equals y =
             match y with
             | :? codeLocation as y -> x.offset = y.offset && x.method.Equals(y.method)
@@ -455,9 +455,9 @@ type ApplicationGraph() =
     let addCallEdge (callSource : codeLocation) (callTarget : codeLocation) =
         let callerMethodCfgInfo = callSource.method.ForceCFG
         let calledMethodCfgInfo = callTarget.method.ForceCFG
-        let callFrom = callSource.BasicBlock
+        let callFrom = callSource.ForceBasicBlock
         let callTo = calledMethodCfgInfo.EntryPoint
-        let exists, location = callerMethodCfgInfo.Calls.TryGetValue callSource.BasicBlock
+        let exists, location = callerMethodCfgInfo.Calls.TryGetValue callSource.ForceBasicBlock
         if not <| callTo.IncomingCallEdges.Contains callFrom then
             let mutable returnTo = callFrom
             // if not exists then it should be from exception mechanism

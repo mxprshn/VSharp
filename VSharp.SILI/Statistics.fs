@@ -161,8 +161,10 @@ type public SILIStatistics() =
         stepsCount <- stepsCount + 1u
         Logger.traceWithTag Logger.stateTraceTag $"{stepsCount} FORWARD: {s.id}"
         let setCoveredIfNeed (currentLoc : codeLocation) =
-            if currentLoc.offset = currentLoc.BasicBlock.FinalOffset then
-                setBasicBlockIsVisited s currentLoc
+            match currentLoc.BasicBlock with
+            | Some bb when currentLoc.offset = bb.FinalOffset ->
+                addLocationToHistory s currentLoc
+            | _ -> ()
         let currentLoc = ip2codeLocation (currentIp s)
         match currentLoc with
         | Some currentLoc when isHeadOfBasicBlock currentLoc ->

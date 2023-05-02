@@ -21,7 +21,7 @@ type ShortestDistanceWeighter(target : codeLocation) =
     let frameWeight (frameMethod : Method) frameOffset frameNumber =
         let frameMethodCFG = frameMethod.ForceCFG
         let frameDist = frameMethodCFG.DistancesFrom frameOffset
-        let checkDist () = Dict.tryGetValue frameDist target.BasicBlock infinity <> infinity
+        let checkDist() = Dict.tryGetValue frameDist target.ForceBasicBlock infinity <> infinity
         let callWeight callMethod =
             let callGraphDistance = Dict.tryGetValue callGraphDistanceToTarget callMethod infinity
             if callGraphDistance = infinity then infinity
@@ -60,7 +60,7 @@ type ShortestDistanceWeighter(target : codeLocation) =
         let localCFG = loc.method.ForceCFG
         let dist = localCFG.DistancesFrom loc.offset
         tagets
-        |> Seq.fold (fun m l -> min m (Dict.tryGetValue dist l.BasicBlock infinity)) infinity
+        |> Seq.fold (fun m l -> min m (Dict.tryGetValue dist l.ForceBasicBlock infinity)) infinity
         |> handleInfinity
         |> Option.map logarithmicScale
 
