@@ -49,8 +49,8 @@ type public SILI(options : SiliOptions) =
         | SymbolicMode -> false
     let interpreter = ILInterpreter(isConcolicMode)
 
-    let methodSequenceExplorer : IMethodSequenceExplorer = MethodSequenceExplorer(interpreter)
-    let methodSequenceSearcher : IMethodSequenceSearcher = MethodSequenceSearcher(options.maxMethodSequenceLength)
+    let methodSequenceExplorer : IMethodSequenceForwardExplorer = MethodSequenceGenerator(interpreter)
+    let methodSequenceSearcher : IMethodSequenceSearcher = MethodSequenceSearcher(options.maxMethodSequenceLength, fun s -> MethodSequenceBackwardExplorer s)
 
     let mutable reportFinished : cilState -> unit = fun _ -> internalfail "reporter not configured!"
     let mutable reportError : cilState -> string -> unit = fun _ -> internalfail "reporter not configured!"
@@ -214,13 +214,13 @@ type public SILI(options : SiliOptions) =
 
     let makeMethodSequenceSearcherStep() =
         match methodSequenceSearcher.Pick() with
-        | [] -> ()
-        | actions ->
-            for action, state in actions do
-                let newStates = methodSequenceExplorer.ExecuteAction action state
-                methodSequenceSearcher.Update state newStates |> ignore
+        | None -> ()
+        | Some state ->
+            let newStates = methodSequenceExplorer.MakeStep state
+            methodSequenceSearcher.Update state newStates |> ignore
 
     let reportWaitingStates() =
+        // TODO: stop when sequences for all tests are found
         let generateSequences() =
             while true do makeMethodSequenceSearcherStep()
 
@@ -239,7 +239,7 @@ type public SILI(options : SiliOptions) =
             if pi.ParameterType.IsByRef then
                 if Memory.CallStackSize initialState = 0 then
                     Memory.NewStackFrame initialState None []
-                let stackRef = Memory.AllocateTemporaryLocalVariableOfType initialState pi.Name (-pi.Position - 1) (pi.ParameterType.GetElementType())
+                let stackRef = Memory.AllocateTemporaryLocalVariableOfType initialState pi.Name (-pi.Position - 2) (pi.ParameterType.GetElementType())
                 Some stackRef
             else
                 None

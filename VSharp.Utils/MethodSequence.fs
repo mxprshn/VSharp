@@ -32,12 +32,14 @@ type methodSequenceArgument =
     | Default of Type
     | ConcretePrimitive of Type * obj
     | Variable of variableId
+    | Hole of Type
 
     override x.ToString() =
         match x with
         | Default typ -> $"default({typ})"
         | ConcretePrimitive(_, value) -> $"{value}"
         | Variable({ typ = typ; index = index }) -> $"{typ.Name}_{index}"
+        | Hole typ -> $"hole({typ})"
 
 type methodSequenceElement =
     | Call of IMethod * variableId option * methodSequenceArgument list
@@ -107,6 +109,7 @@ type InvokableMethodSequence(reprs : methodSequenceElementRepr array) =
             | Variable id ->
                 if locals.ContainsKey id then locals[id]
                 else null
+            | Hole _ -> __unreachable__()
         let call (element : invokableMethodSequenceElement) =
             match element with
             | Call(method, ret, args) ->
@@ -187,6 +190,7 @@ module MethodSequence =
                 isDefault = false
                 typ = Serialization.encodeType typ
             }
+        | Hole _ -> __unreachable__()
 
     let public elementToRepr (element : methodSequenceElement) =
         match element with

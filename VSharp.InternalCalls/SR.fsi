@@ -71,3 +71,6 @@ module internal SR =
 
     [<Implements("System.String System.SR.get_ArgumentOutOfRange_SmallCapacity()")>]
     val internal get_ArgumentOutOfRange_SmallCapacity : state -> term list -> term
+
+    [<Implements("System.String System.SR.get_ArgumentOutOfRange_DecimalScale()")>]
+    val internal get_ArgumentOutOfRange_DecimalScale : state -> term list -> term
