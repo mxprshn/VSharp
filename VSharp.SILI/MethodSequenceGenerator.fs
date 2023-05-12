@@ -42,6 +42,7 @@ type internal IMethodSequenceSearcher =
     abstract Pick : unit -> methodSequenceState option
     abstract Update : methodSequenceState -> methodSequenceState list -> cilState list
     abstract AddTarget : cilState option -> cilState -> methodSequenceResult
+    abstract RemoveTarget : cilState -> bool
 
 type internal IMethodSequenceForwardExplorer =
     abstract MakeStep : methodSequenceState -> methodSequenceState list
@@ -172,6 +173,7 @@ type internal MethodSequenceSearcher(maxSequenceLength : uint, backwardExplorerF
     let rec pick() =
         if targets.Count = 0 then None
         else
+            Logger.traceWithTag Logger.methodSequenceSearcherTag $"To pop: {statesToPop.Count} To push: {statesToPush.Count} In method: {statesInMethod.Count}"
             counter <- (counter + 1) % interleaveAt
             if statesInMethod.Count = 0 || counter = interleaveAt then
                 if statesToPop.Count > 0 then
@@ -200,6 +202,7 @@ type internal MethodSequenceSearcher(maxSequenceLength : uint, backwardExplorerF
                             pick()
                         | _ ->
                             statesToPop.Enqueue(state, 1)
+                            statesToPush.Enqueue(stateToPush, stateToPush.currentSequence.Length + stateToPush.upcomingSequence.Length)
                             pick()
                 else
                     None
@@ -211,19 +214,14 @@ type internal MethodSequenceSearcher(maxSequenceLength : uint, backwardExplorerF
         assert(state.cilState.currentLoc.offset = 0<offsets> && targetMethods.Contains state.cilState.currentLoc.method)
         let wlp = Memory.WLP state.cilState.state target.state.pc
         let prevPc = state.cilState.state.pc
+        let prevAllocatedTypes = state.cilState.state.allocatedTypes
         state.cilState.state.pc <- wlp
+        state.cilState.state.allocatedTypes <- PersistentDict.fold (fun d a b -> PersistentDict.add a b d) state.cilState.state.allocatedTypes target.state.allocatedTypes
         try
-            match SolverInteraction.checkSat state.cilState.state with
-            | SolverInteraction.SmtSat satInfo ->
-                // How to consider type model?
-                let primitiveModelState =
-                    match satInfo.mdl with
-                    | StateModel(modelState, _, _) -> modelState
-                    | _ -> __unreachable__()
-
+            if IsFalsePathCondition state.cilState.state then
+                false
+            elif IsTruePathCondition state.cilState.state then
                 let modelState = Memory.CopyState state.cilState.state
-                modelState.model <- StateModel(primitiveModelState, typeModel.CreateEmpty(), None)
-
                 let currentTypeModel =
                     match target.state.model with
                     | StateModel(_, typeModel, _) -> typeModel
@@ -231,11 +229,8 @@ type internal MethodSequenceSearcher(maxSequenceLength : uint, backwardExplorerF
 
                 let mapArgument (arg : methodSequenceArgument) =
                     match arg with
-                    | Variable({ typ = typ; index = index }) when MethodSequenceHelpers.isPrimitive typ ->
-                        let key = TemporaryLocalVariableKey(typ, index)
-                        match Memory.ReadLocalVariable primitiveModelState key with
-                        | {term = Concrete(v, t)} -> ConcretePrimitive(t, v)
-                        | _ -> __unreachable__()
+                    | Variable({ typ = typ }) when MethodSequenceHelpers.isPrimitive typ ->
+                        ConcretePrimitive(typ, Activator.CreateInstance typ)
                     | Hole _ -> __unreachable__()
                     | _ -> arg
 
@@ -250,10 +245,49 @@ type internal MethodSequenceSearcher(maxSequenceLength : uint, backwardExplorerF
                 target.state.model <- StateModel(modelState, currentTypeModel, Some filledSequence)
                 finishedTargets[target] <- state
                 true
-            | _ ->
-                false
+            else
+                match SolverInteraction.checkSat state.cilState.state with
+                | SolverInteraction.SmtSat satInfo ->
+                    // How to consider type model?
+                    let primitiveModelState =
+                        match satInfo.mdl with
+                        | StateModel(modelState, _, _) -> modelState
+                        | _ -> __unreachable__()
+
+                    let modelState = Memory.CopyState state.cilState.state
+                    modelState.model <- StateModel(primitiveModelState, typeModel.CreateEmpty(), None)
+
+                    let currentTypeModel =
+                        match target.state.model with
+                        | StateModel(_, typeModel, _) -> typeModel
+                        | _ -> __unreachable__()
+
+                    let mapArgument (arg : methodSequenceArgument) =
+                        match arg with
+                        | Variable({ typ = typ; index = index }) when MethodSequenceHelpers.isPrimitive typ ->
+                            let key = TemporaryLocalVariableKey(typ, index)
+                            match Memory.ReadLocalVariable primitiveModelState key with
+                            | {term = Concrete(v, t)} -> ConcretePrimitive(t, v)
+                            | _ -> __unreachable__()
+                        | Hole _ -> __unreachable__()
+                        | _ -> arg
+
+                    let fillHoles (element : methodSequenceElement) =
+                        match element with
+                        | methodSequenceElement.Call(method, stackKeyOption, methodSequenceArguments) ->
+                            let mappedArguments = methodSequenceArguments |> List.map mapArgument
+                            methodSequenceElement.Call(method, stackKeyOption, mappedArguments)
+                        | methodSequenceElement.CreateDefaultStruct _ -> element
+
+                    let filledSequence = state.currentSequence |> List.map fillHoles |> List.rev
+                    target.state.model <- StateModel(modelState, currentTypeModel, Some filledSequence)
+                    finishedTargets[target] <- state
+                    true
+                | _ ->
+                    false
         finally
             state.cilState.state.pc <- prevPc
+            state.cilState.state.allocatedTypes <- prevAllocatedTypes
 
     let finish state =
         Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Finished:"
@@ -393,10 +427,14 @@ type internal MethodSequenceSearcher(maxSequenceLength : uint, backwardExplorerF
                         else Exists
                     else Exists
 
+    let removeTarget target =
+        targets.Remove target
+
     interface IMethodSequenceSearcher with
         member x.Pick() = pick()
         member x.Update parent newStates = update parent newStates
         member x.AddTarget parent target = addTarget parent target
+        member x.RemoveTarget target = removeTarget target
 
 type internal MethodSequenceBackwardExplorer(state : methodSequenceState) =
 
@@ -447,12 +485,17 @@ type internal MethodSequenceBackwardExplorer(state : methodSequenceState) =
                 | _ -> None
             match List.indexed arguments |> List.tryPick unwrapHoleType with
             | None ->
+                let isTheSameSetter existing newSetter =
+                    match newSetter, existing with
+                    | Call(newMethod, _, [newReceiver; _]), Call(exisingMethod, _, [exisingReceiver; _]) ->
+                        newMethod = exisingMethod && newReceiver = exisingReceiver
+                    | _ -> false
                 // If there is nothing to create, try to call setters
                 let settersCalls =
                     MethodSequenceHelpers.getExistingObjectIds state |>
                         Seq.collect getSettersCalls |>
-                        // TODO: what if it is in upcoming sequence?
-                        Seq.filter (fun e -> not <| List.contains e state.currentSequence)
+                        Seq.filter (fun e -> not <| List.exists (isTheSameSetter e) state.currentSequence) |>
+                        Seq.filter (fun e -> not <| List.exists (isTheSameSetter e) state.upcomingSequence)
                 for call in settersCalls ->
                     { state with upcomingSequence = call :: state.upcomingSequence }
             | Some(index, typ) ->
@@ -670,6 +713,8 @@ type internal MethodSequenceGenerator(interpreter : ILInterpreter) =
     let makeStep (state : methodSequenceState) =
         // TODO: Try enable concrete memory with unmarshalling
         let wasConcreteMemoryEnabled = Memory.IsConcreteMemoryEnabled()
+        let wereBranchesReleased = BranchesReleased()
+        AcquireBranches()
         Memory.EnableConcreteMemory false
         try
             if MethodSequenceHelpers.isInMethod state then
@@ -682,6 +727,7 @@ type internal MethodSequenceGenerator(interpreter : ILInterpreter) =
                 pop state
         finally
             Memory.EnableConcreteMemory wasConcreteMemoryEnabled
+            if wereBranchesReleased then ReleaseBranches()
 
     interface IMethodSequenceForwardExplorer with
         override x.MakeStep state = makeStep state

@@ -142,7 +142,7 @@ module TestGenerator =
             else null
         | {term = Struct(fields, t)} ->
             let fieldReprs =
-                t |> Reflection.fieldsOf false |> Array.map (fun (field, _) -> model.Complete fields.[field] |> term2obj model state indices mockCache implementations test)
+                t |> Reflection.fieldsOf false |> Array.map (fun (field, _) -> model.Eval fields.[field] |> model.Complete |> term2obj model state indices mockCache implementations test)
             test.MemoryGraph.RepresentStruct t fieldReprs
         | NullRef _
         | NullPtr -> null

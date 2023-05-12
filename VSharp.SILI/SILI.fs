@@ -1,6 +1,7 @@
 namespace VSharp.Interpreter.IL
 
 open System
+open System.Diagnostics
 open System.Reflection
 open System.Collections.Generic
 open System.Threading.Tasks
@@ -17,7 +18,7 @@ open VSharp.Solver
 type public SILI(options : SiliOptions) =
 
     let isMethodSequenceGenerationEnabled =
-        options.methodSequenceStepsShare > 0u || options.extraMethodSequenceSearchTimeout <> 0
+        options.methodSequenceStepsShare > 0uy || options.extraMethodSequenceSearchTimeout <> 0
 
     let hasTimeout = options.timeout > 0
     let timeout =
@@ -25,7 +26,7 @@ type public SILI(options : SiliOptions) =
         else float options.timeout * 1000.0
     let solverTimeout =
         if options.solverTimeout > 0 then options.solverTimeout * 1000
-        else options.timeout / 2 * 1000
+        else (max options.timeout options.extraMethodSequenceSearchTimeout) / 2 * 1000
     let branchReleaseTimeout =
         if not hasTimeout then Double.PositiveInfinity
         elif not options.releaseBranches then timeout
@@ -64,12 +65,12 @@ type public SILI(options : SiliOptions) =
 
     let mutable concolicMachines : Dictionary<cilState, ClientMachine> = Dictionary<cilState, ClientMachine>()
 
-    let statesWaitingForSequence = Queue<cilState * (unit -> unit)>()
+    let statesWaitingForSequence = Dictionary<cilState, (unit -> unit)>()
 
     let () =
         if options.visualize then
             DotVisualizer options.outputDirectory :> IVisualizer |> Application.setVisualizer
-        SetMaxBuferSize options.maxBufferSize
+        SetMaxBufferSize options.maxBufferSize
         TestGenerator.setMaxBufferSize options.maxBufferSize
 
     let inCoverageZone coverageZone (entryMethods : Method list) =
@@ -134,7 +135,8 @@ type public SILI(options : SiliOptions) =
     let reportState reporter isError cilState message =
         try
             searcher.Remove cilState
-            if cilState.history |> Seq.exists (not << statistics.IsBasicBlockCoveredByTest)
+            // TODO: EmitError can discard interesting errors
+            if cilState.history |> Seq.exists (not << statistics.IsBasicBlockCoveredByTest) && (not isError || statistics.EmitError cilState message)
             then
                 let hasException =
                     match cilState.state.exceptionsRegister with
@@ -148,24 +150,24 @@ type public SILI(options : SiliOptions) =
                         if entryMethod.DeclaringType.IsValueType || methodHasByRefParameter entryMethod
                         then Memory.ForcePopFrames (callStackSize - 2) cilState.state
                         else Memory.ForcePopFrames (callStackSize - 1) cilState.state
-                if not isError || statistics.EmitError cilState message
-                then
                     // TODO: we can update statistics or not according to settings
-                    statistics.TrackFinished cilState
-                    let generateTest() =
-                        match TestGenerator.state2test isError entryMethod cilState message with
-                        | Some test ->
-                            //statistics.TrackFinished cilState
-                            reporter test
-                            if isCoverageAchieved() then
-                                isStopped <- true
-                        | None -> ()
-                    if isMethodSequenceGenerationEnabled && not <| hasMethodSequence cilState then
-                        Console.WriteLine "Enqueue state to report later\n"
-                        statesWaitingForSequence.Enqueue(cilState, generateTest)
-                    else
-                        printSequence cilState
-                        generateTest()
+                statistics.TrackFinished cilState
+                let generateTest() =
+                    match TestGenerator.state2test isError entryMethod cilState message with
+                    | Some test ->
+                        //statistics.TrackFinished cilState
+                        reporter test
+                        if isCoverageAchieved() then
+                            isStopped <- true
+                    | None -> ()
+                if not <| hasMethodSequence cilState && isMethodSequenceGenerationEnabled then
+                    Console.WriteLine "Enqueue state to report later\n"
+                    statesWaitingForSequence.Add(cilState, generateTest)
+                else
+                    printSequence cilState
+                    generateTest()
+            else
+                methodSequenceSearcher.RemoveTarget cilState |> ignore
         with :? InsufficientInformationException as e ->
             cilState.iie <- Some e
             reportStateIncomplete cilState
@@ -212,27 +214,63 @@ type public SILI(options : SiliOptions) =
 
     let wrapOnCrash (action : Action<Exception>) (e : Exception) = action.Invoke e
 
-    let makeMethodSequenceSearcherStep() =
+    let makeMethodSequenceSearchStep() =
         match methodSequenceSearcher.Pick() with
-        | None -> ()
+        | None -> false
         | Some state ->
             let newStates = methodSequenceExplorer.MakeStep state
             methodSequenceSearcher.Update state newStates |> ignore
+            true
 
-    let reportWaitingStates() =
-        // TODO: stop when sequences for all tests are found
-        let generateSequences() =
-            while true do makeMethodSequenceSearcherStep()
+    let mutable svmStepsCounter = 0
 
-        if options.extraMethodSequenceSearchTimeout > 0 then
-            let task = Task.Run generateSequences
-            task.Wait(options.extraMethodSequenceSearchTimeout * 1000) |> ignore
+    let makeMethodSequenceSearchStepsIfNeeded =
+        let bounded = min options.methodSequenceStepsShare 99uy
+        if bounded = 0uy then (fun _ -> ())
+        elif bounded >= 50uy then
+            let methodSequenceSearcherSteps = float bounded / float (100uy - bounded) |> ceil |> int
+            let makeSteps() =
+                let mutable counter = 0
+                while counter <> methodSequenceSearcherSteps && makeMethodSequenceSearchStep() do
+                    counter <- counter + 1
+            makeSteps
+        else
+            let svmSteps = float (100uy - bounded) / float bounded |> ceil |> int
+            let makeStep() =
+                if svmStepsCounter = svmSteps then
+                    svmStepsCounter <- 0
+                    makeMethodSequenceSearchStep() |> ignore
+                else
+                    svmStepsCounter <- svmStepsCounter + 1
+            makeStep
 
-        while statesWaitingForSequence.Count > 0 do
-            let state, action = statesWaitingForSequence.Dequeue()
-            if options.generateTestsWithoutSequence || hasMethodSequence state then
+    member x.FindRemainingMethodSequences() =
+        if statesWaitingForSequence.Count > 0 then
+            if options.extraMethodSequenceSearchTimeout > 0 then
+                for state in searcher.States() |> Seq.filter (not << statesWaitingForSequence.ContainsKey) do
+                    methodSequenceSearcher.RemoveTarget state |> ignore
+
+                let remainingSvmTimeMs = max 0 ((timeout - statistics.CurrentExplorationTime.TotalMilliseconds) |> ceil |> int)
+                let timeoutMs = options.extraMethodSequenceSearchTimeout * 1000 + remainingSvmTimeMs
+
+                let searchForSequences() =
+                    let stopwatch = Stopwatch()
+                    stopwatch.Start()
+                    while stopwatch.ElapsedMilliseconds < timeoutMs && makeMethodSequenceSearchStep() do ()
+
+                let task = Task.Run searchForSequences
+                task.Wait(int(float timeoutMs * 1.5)) |> ignore
+
+            for kvp in statesWaitingForSequence do
+                let state = kvp.Key
+                let generateTest = kvp.Value
                 printSequence state
-                action()
+                if not <| hasMethodSequence state then
+                    if options.generateTestsWithoutSequence then
+                       generateTest()
+                    statistics.AddPcWithoutSequence state
+                else
+                    generateTest()
 
     static member private AllocateByRefParameters initialState (method : Method) =
         let allocateIfByRef (pi : ParameterInfo) =
@@ -338,9 +376,7 @@ type public SILI(options : SiliOptions) =
             []
 
     member private x.Forward (s : cilState) =
-        if isMethodSequenceGenerationEnabled then
-            for _ in 1u..options.methodSequenceStepsShare do
-                makeMethodSequenceSearcherStep()
+        makeMethodSequenceSearchStepsIfNeeded()
         let loc = s.currentLoc
         // TODO: update pobs when visiting new methods; use coverageZone
         statistics.TrackStepForward s
@@ -442,7 +478,7 @@ type public SILI(options : SiliOptions) =
 //            reportFinished.Invoke machine.State
         | SymbolicMode ->
             x.BidirectionalSymbolicExecution()
-            reportWaitingStates()
+            x.FindRemainingMethodSequences()
         searcher.Statuses() |> Seq.iter (fun (pob, status) ->
             match status with
             | pobStatus.Unknown ->
@@ -460,6 +496,7 @@ type public SILI(options : SiliOptions) =
         SolverInteraction.setOnSolverStopped statistics.SolverStopped
         AcquireBranches()
         isCoverageAchieved <- always false
+        svmStepsCounter <- 0
         statesWaitingForSequence.Clear()
         match options.explorationMode with
         | TestCoverageMode(coverageZone, _) ->

@@ -41,7 +41,6 @@ module internal Memory =
         model = PrimitiveModel (Dictionary())
         complete = complete
         methodMocks = Dictionary()
-        isModelState = isModelState
     }
 
     type memoryMode =
@@ -84,6 +83,9 @@ module internal Memory =
             let absOffset = mul relOffset lensProd
             add acc absOffset
         List.fold attachOne (makeNumber 0) [0 .. length - 1]
+
+    let isModelState state =
+        VectorTime.less state.startingTime VectorTime.zero
 
 // ------------------------------- Stack -------------------------------
 
@@ -419,7 +421,7 @@ module internal Memory =
 
     let freshAddress state =
         let newTime =
-            if state.isModelState then
+            if isModelState state then
                 let startingTime = VectorTime.decrement state.startingTime
                 state.startingTime <- startingTime
                 let currentTime = VectorTime.decrement state.currentTime
@@ -1398,6 +1400,7 @@ module internal Memory =
 
     let private composeTime state time =
         if time = [] then state.currentTime
+        elif isModelState state then time
         elif VectorTime.less VectorTime.zero time |> not then time
         elif state.complete then time
         else state.currentTime @ time
@@ -1639,7 +1642,6 @@ module internal Memory =
                     model = state.model // TODO: compose models (for example, mocks)
                     complete = state.complete
                     methodMocks = methodMocks
-                    isModelState = state.isModelState
                 }
         }
 

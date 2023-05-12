@@ -45,6 +45,7 @@ type public SILIStatistics() as this =
     let totalVisited = Dictionary<codeLocation, uint>()
     let visitedWithHistory = Dictionary<codeLocation, HashSet<codeLocation>>()
     let emittedErrors = HashSet<codeLocation * string>()
+    let pcsWithoutSequences = HashSet<string>()
 
     let mutable isVisitedBlocksNotCoveredByTestsRelevant = true
     let visitedBlocksNotCoveredByTests = Dictionary<cilState, Set<codeLocation>>()
@@ -268,6 +269,9 @@ type public SILIStatistics() as this =
                 visitedBlocksNotCoveredByTests[child] <- parentBlocks
 
     member x.AddUnansweredPob (p : pob) = unansweredPobs.Add(p)
+
+    member x.AddPcWithoutSequence (state : cilState) =
+        pcsWithoutSequences.Add(Print.PrintPC state.state.pc) |> ignore
 
     member x.Reset() =
         totalVisited.Clear()

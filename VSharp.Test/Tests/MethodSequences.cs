@@ -309,6 +309,52 @@ public static class MethodSequences
 
         return false;
     }
+
+    [TestSvm]
+    public static bool NewEffect(TestStruct str, int n, int m)
+    {
+        if (str.Value < 1)
+        {
+            return false;
+        }
+
+        var arr = new int[str.Value];
+
+        if (arr[m] + n > 2)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    [TestSvm]
+    public static int Arrays1(int[] arr)
+    {
+        for (var i = 0; i < 5; i++)
+        {
+            if (arr[i] != i)
+            {
+                return 0;
+            }
+        }
+
+        return 1;
+    }
+
+    [TestSvm]
+    public static int Arrays2(StringBuilder[] arr)
+    {
+        for (var i = 0; i < 5; i++)
+        {
+            if (arr[i] == null)
+            {
+                return 0;
+            }
+        }
+
+        return 1;
+    }
 }
 
 [TestSvmFixture]

@@ -19,7 +19,7 @@ module API =
     let Restore() =
         IdGenerator.restore()
 
-    let SetMaxBuferSize size = SolverInteraction.setMaxBufferSize size
+    let SetMaxBufferSize size = SolverInteraction.setMaxBufferSize size
 
     let BranchStatements state condition thenStatement elseStatement k =
         Branching.statedConditionalExecutionWithMergek state condition thenStatement elseStatement k
@@ -39,6 +39,7 @@ module API =
 
     let ReleaseBranches() = Branching.branchesReleased <- true
     let AcquireBranches() = Branching.branchesReleased <- false
+    let BranchesReleased() = Branching.branchesReleased
 
     let PerformBinaryOperation op left right k = simplifyBinaryOperation op left right k
     let PerformUnaryOperation op arg k = simplifyUnaryOperation op arg k
