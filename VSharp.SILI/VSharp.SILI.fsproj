@@ -55,7 +55,9 @@
         <Compile Include="Instrumenter.fs" />
         <Compile Include="ClientMachine.fs" />
         <Compile Include="TestGenerator.fs" />
-        <Compile Include="MethodSequenceGenerator.fs" />
+        <Compile Include="MethodSequenceState.fs" />
+        <Compile Include="MethodSequenceExplorer.fs" />
+        <Compile Include="MethodSequenceSearcher.fs" />
         <Compile Include="SILI.fs" />
     </ItemGroup>
 

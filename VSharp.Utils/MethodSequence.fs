@@ -69,8 +69,8 @@ type InvokableMethodSequence(reprs : methodSequenceElementRepr array) =
         | { index = -1; concrete = obj; isDefault = false; typ = typeRepr } ->
             let typ = Serialization.decodeType typeRepr
             let obj =
-                if typ.IsByRef && typ.GetElementType().IsEnum then
-                    Enum.ToObject(typ.GetElementType(), obj)
+                if typ.IsEnum then
+                    Enum.ToObject(typ, obj)
                 else obj
             ConcretePrimitive(typ, obj)
         | { index = index; concrete = null; isDefault = false; typ = typeRepr } ->

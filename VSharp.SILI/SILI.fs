@@ -50,7 +50,7 @@ type public SILI(options : SiliOptions) =
         | SymbolicMode -> false
     let interpreter = ILInterpreter(isConcolicMode)
 
-    let methodSequenceExplorer : IMethodSequenceForwardExplorer = MethodSequenceGenerator(interpreter)
+    let methodSequenceExplorer : IMethodSequenceForwardExplorer = MethodSequenceForwardExplorer(interpreter)
     let methodSequenceSearcher : IMethodSequenceSearcher = MethodSequenceSearcher(options.maxMethodSequenceLength, fun s -> MethodSequenceBackwardExplorer s)
 
     let mutable reportFinished : cilState -> unit = fun _ -> internalfail "reporter not configured!"

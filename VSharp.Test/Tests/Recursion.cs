@@ -1,8 +1,8 @@
-using NUnit.Framework;
- using System;
-using VSharp.Test;
+    using System;
+    using NUnit.Framework;
+    using VSharp.Test;
 
-namespace IntegrationTests
+    namespace IntegrationTests
 {
     [TestSvmFixture]
     public static class Fibonacci

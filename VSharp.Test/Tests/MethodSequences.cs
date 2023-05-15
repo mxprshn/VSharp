@@ -327,6 +327,18 @@ public static class MethodSequences
 
         return false;
     }
+    
+    [TestSvm]
+    public static int ByRefWithObject(ref int n, TestClass o)
+    {
+        var oValue = o.GetValue();
+        if (n > 10 && oValue > 10 && n + oValue == 100)
+        {
+            return 0;
+        }
+
+        return 1;
+    }
 
     [TestSvm]
     public static int Arrays1(int[] arr)

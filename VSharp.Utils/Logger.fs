@@ -16,10 +16,10 @@ module Logger =
     let Info = 4
     let Trace = 5
 
-    let mutable currentLogLevel = Trace
+    let mutable currentLogLevel = Error
     let mutable currentTextWriter = Console.Out
     let mutable writeTimestamps = true
-    let mutable tagFilter : string -> bool = fun s -> s = methodSequenceSearcherTag
+    let mutable tagFilter : string -> bool = fun s -> s <> methodSequenceSearcherTag
 
     let public configureWriter writer = currentTextWriter <- writer
     let public enableTimestamps value = writeTimestamps <- value

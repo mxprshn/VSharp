@@ -178,7 +178,7 @@ namespace VSharp
                     maxBufferSize: 128,
                     checkAttributes: true,
                     stopOnCoverageAchieved: 100,
-                    methodSequenceStepsShare : 10u,
+                    methodSequenceStepsShare : 10,
                     generateTestsWithoutSequence : true,
                     extraMethodSequenceSearchTimeout : 0,
                     maxMethodSequenceLength : UInt32.MaxValue
