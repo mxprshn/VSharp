@@ -645,7 +645,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
     member private x.FillStringChecked (cilState : cilState) _ (args : term list) =
         assert(List.length args = 3)
         let state = cilState.state
-        let dest, destPos, src = args.[0], args.[1], args.[2]
+        let dest, destPos, src = args[0], args[1], args[2]
         let srcPos = MakeNumber 0
         let srcLength = Memory.StringLength state src
         let destLength = Memory.StringLength state dest
@@ -662,7 +662,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
 
     member private x.ClearArray (cilState : cilState) _ (args : term list) =
         assert(List.length args = 3)
-        let array, index, length = args.[0], args.[1], args.[2]
+        let array, index, length = args[0], args[1], args[2]
         let (>>) = API.Arithmetics.(>>)
         let (<<) = API.Arithmetics.(<<)
         let clearCase (cilState : cilState) k =
@@ -748,12 +748,12 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
 
     member private x.CopyArrayExtendedForm2 (cilState : cilState) _ (args : term list) =
         assert(List.length args = 5)
-        let src, srcIndex, dst, dstIndex, length = args.[0], args.[1], args.[2], args.[3], args.[4]
+        let src, srcIndex, dst, dstIndex, length = args[0], args[1], args[2], args[3], args[4]
         x.CommonCopyArray cilState src srcIndex dst dstIndex length
 
     member private x.CopyArrayShortForm (cilState : cilState) _ (args : term list) =
         assert(List.length args = 3)
-        let src, dst, length = args.[0], args.[1], args.[2]
+        let src, dst, length = args[0], args[1], args[2]
         let state = cilState.state
         let zero = TypeUtils.Int32.Zero
         let srcLB = Memory.ArrayLowerBoundByDimension state src zero
@@ -816,11 +816,20 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
 
     member private x.FastMod (cilState : cilState) this (args : term list) =
         assert(List.length args = 3 && Option.isNone this)
-        let hashCode, length = args.[0], args.[1]
+        let left, right = args[0], args[1]
+        let validCase cilState k =
+            let leftType = TypeOf left
+            let rightType = TypeOf right
+            let result =
+                if TypeUtils.isUnsigned leftType || TypeUtils.isUnsigned rightType then
+                    Arithmetics.RemUn left right
+                else Arithmetics.Rem left right
+            push result cilState
+            k [cilState]
         StatedConditionalExecutionCIL cilState
-            (fun state k -> k (length === MakeNumber 0, state))
+            (fun state k -> k (right === MakeNumber 0, state))
             (x.Raise x.DivideByZeroException)
-            (fun cilState k -> push (Arithmetics.Rem hashCode length) cilState; k [cilState])
+            validCase
             id
 
     member private x.TrustedIntrinsics =
@@ -935,6 +944,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
             |> conjunction
 
         let message = "DisallowNullAttribute violation"
+        // TODO: invoke only if method has attributes
         ILInterpreter.CheckAttributeAssumptions cilState method disallowNullAssumptions message isError
 
     static member CheckDisallowNullAssumptionsAndReport cilState method =
@@ -960,6 +970,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
             parameterAssumptions &&& returnAssumptions
 
         let message = "NotNullAttribute violation"
+        // TODO: invoke only if method has attributes
         ILInterpreter.CheckAttributeAssumptions cilState method notNullAssumptions message true
 
     member private x.InitStaticFieldWithDefaultValue state (f : FieldInfo) =
@@ -1162,16 +1173,10 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
                 | _ -> ()
         }
         let invokeMock cilState k =
-            let model = cilState.state.model
-            match List.ofSeq typeMocks, model.Eval this with
-            | [], _ -> List.singleton cilState |> k
-            | [mock : ITypeMock], {term = HeapRef({term = ConcreteHeapAddress thisInModel}, _)} ->
+            match typeMocks with
+            | _ when Seq.isEmpty typeMocks -> List.singleton cilState |> k
+            | _ when Seq.length typeMocks = 1 ->
                 popFrameOf cilState
-                let modelState =
-                    match model with
-                    | StateModel(s, _, _) -> s
-                    | _ -> __unreachable__()
-                modelState.allocatedTypes <- PersistentDict.add thisInModel (MockType mock) modelState.allocatedTypes
                 let overriden =
                     if ancestorMethod.DeclaringType.IsInterface then ancestorMethod
                     else x.ResolveVirtualMethod targetType ancestorMethod
@@ -1468,6 +1473,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
         x.NpeOrInvokeStatementCIL cilState targetRef storeWhenTargetIsNotNull id
     member private x.LdElemCommon (typ : Type option) (cilState : cilState) arrayRef indices =
         let arrayType = MostConcreteTypeOfHeapRef cilState.state arrayRef
+        let indices = List.map (fun i -> Types.Cast i typeof<int>) indices
         let uncheckedLdElem (cilState : cilState) k =
             ConfigureErrorReporter (changeState cilState >> reportError)
             let value = Memory.ReadArrayIndex cilState.state arrayRef indices typ
@@ -1489,6 +1495,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
     member private x.LdElema (m : Method) offset (cilState : cilState) =
         let typ = resolveTypeFromMetadata m (offset + Offset.from OpCodes.Ldelema.Size)
         let index, arrayRef = pop2 cilState
+        let index = Types.Cast index typeof<int>
         let referenceLocation (cilState : cilState) k =
             let value = Memory.ReferenceArrayIndex cilState.state arrayRef [index] (Some typ)
             push value cilState
@@ -1507,6 +1514,7 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
     member private x.StElemCommon (typ : Type option) (cilState : cilState) arrayRef indices value =
         let arrayType = MostConcreteTypeOfHeapRef cilState.state arrayRef
         let baseType = Types.ElementType arrayType
+        let indices = List.map (fun i -> Types.Cast i typeof<int>) indices
         let checkedStElem (cilState : cilState) (k : cilState list -> 'a) =
             let typeOfValue = TypeOf value
             let uncheckedStElem (cilState : cilState) (k : cilState list -> 'a) =
@@ -1966,15 +1974,13 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
         let argumentsLength = List.length arguments
         let argumentsTypes =
             List.map TypeOf arguments
-        let ctors =
-            constructors
-            |> List.ofArray
-            |> List.filter (fun (ci : ConstructorInfo)
-                             -> ci.GetParameters().Length = argumentsLength
-                                && ci.GetParameters()
-                                   |> Seq.forall2 (fun p1 p2 -> p2.ParameterType.IsAssignableFrom(p1)) argumentsTypes)
-        assert(List.length ctors = 1)
-        let ctor = List.head ctors
+        let suitable (ci : ConstructorInfo) =
+            let parameters = ci.GetParameters()
+            parameters.Length = argumentsLength
+            && parameters |> Seq.forall2 (fun p1 p2 -> p2.ParameterType.IsAssignableFrom p1) argumentsTypes
+        let ctors = constructors |> Array.filter suitable
+        assert(Array.length ctors = 1)
+        let ctor = ctors[0]
         let fullConstructorName = Reflection.getFullMethodName ctor
         assert (Loader.hasRuntimeExceptionsImplementation fullConstructorName)
         let proxyCtor = Loader.getRuntimeExceptionsImplementation fullConstructorName |> Application.getMethod
@@ -2020,16 +2026,16 @@ type internal ILInterpreter(isConcolicMode : bool) as this =
         let startingOffset = ip.Offset()
         let cfg = m.ForceCFG
         let endOffset =
-            let lastOffset = Seq.last cfg.SortedOffsets
+            let lastOffset = Seq.last cfg.SortedBasicBlocks
             let rec binarySearch l r =
                 if l + 1 = r then l
                 else
                     let mid = (l + r) / 2
-                    if cfg.SortedOffsets.[mid] <= startingOffset then binarySearch mid r
+                    if cfg.SortedBasicBlocks.[mid].StartOffset <= startingOffset then binarySearch mid r
                     else binarySearch l mid
-            let index = binarySearch 0 (Seq.length cfg.SortedOffsets)
-            if cfg.SortedOffsets.[index] = lastOffset then Offset.from cfg.IlBytes.Length
-            else cfg.SortedOffsets.[index + 1]
+            let index = binarySearch 0 (Seq.length cfg.SortedBasicBlocks)
+            if cfg.SortedBasicBlocks.[index] = lastOffset then Offset.from cfg.IlBytes.Length
+            else cfg.SortedBasicBlocks.[index + 1].StartOffset
 
         let isIpOfCurrentBasicBlock (ip : ip) =
             match ip with

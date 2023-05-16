@@ -44,8 +44,8 @@ module API =
     let PerformBinaryOperation op left right k = simplifyBinaryOperation op left right k
     let PerformUnaryOperation op arg k = simplifyUnaryOperation op arg k
 
-    let SolveGenericMethodParameters (typeModel : typeModel) (method : IMethod) =
-        TypeSolver.solveMethodParameters typeModel method
+    let SolveGenericMethodParameters (typeStorage : typeStorage) (method : IMethod) =
+        TypeSolver.solveMethodParameters typeStorage method
     let ResolveCallVirt state thisAddress thisType ancestorMethod = TypeSolver.getCallVirtCandidates state thisAddress thisType ancestorMethod
 
     let mutable private reportError = fun _ _ -> ()
@@ -125,9 +125,9 @@ module API =
 
         let (|True|_|) t = (|True|_|) t
         let (|False|_|) t = (|False|_|) t
-        let (|Negation|_|) t = Terms.(|NegationT|_|) t
-        let (|Conjunction|_|) term = Terms.(|Conjunction|_|) term.term
-        let (|Disjunction|_|) term = Terms.(|Disjunction|_|) term.term
+        let (|Negation|_|) t = (|NegationT|_|) t
+        let (|Conjunction|_|) term = (|Conjunction|_|) term.term
+        let (|Disjunction|_|) term = (|Disjunction|_|) term.term
         let (|NullRef|_|) = function
             | {term = HeapRef(addr, t)} when addr = zeroAddress -> Some(t)
             | _ -> None
@@ -163,6 +163,7 @@ module API =
         let (|RefSubtypeTypeSource|_|) src = TypeCasting.(|RefSubtypeTypeSource|_|) src
         let (|TypeSubtypeRefSource|_|) src = TypeCasting.(|TypeSubtypeRefSource|_|) src
         let (|RefSubtypeRefSource|_|) src = TypeCasting.(|RefSubtypeRefSource|_|) src
+        let (|GetHashCodeSource|_|) s = Memory.(|GetHashCodeSource|_|) s
 
         let GetHeapReadingRegionSort src = Memory.getHeapReadingRegionSort src
 
@@ -175,7 +176,11 @@ module API =
             | Union gvs -> gvs |> List.map (fun (g, v) -> (g, HeapReferenceToBoxReference v)) |> Merging.merge
             | _ -> internalfailf "Unboxing: expected heap reference, but got %O" reference
 
-        let AddConstraint conditionState condition = Memory.addConstraint conditionState condition
+        let AddConstraint conditionState condition =
+            Memory.addConstraint conditionState condition
+            let constraints = conditionState.typeStorage.Constraints
+            TypeStorage.addTypeConstraint constraints condition
+
         let IsFalsePathCondition conditionState = PC.isFalse conditionState.pc
         let IsTruePathCondition conditionState = PC.isEmpty conditionState.pc
         let Contradicts state condition = PC.add state.pc condition |> PC.isFalse
@@ -234,6 +239,7 @@ module API =
         let Sub x y = sub x y
         let Add x y = add x y
         let Rem x y = rem x y
+        let RemUn x y = remUn x y
         let IsZero term = checkEqualZero term id
 
         let Acos x = acos x
@@ -275,7 +281,16 @@ module API =
         let EmptyStack = EvaluationStack.empty
 
     module public Memory =
-
+        let EmptyState() = Memory.makeEmpty false
+        let EmptyModel method =
+            let modelState = Memory.makeEmpty true
+            Memory.fillModelWithParametersAndThis modelState method
+            StateModel modelState
+            
+        let CopyState (state : state) = Memory.copy state state.pc
+        
+        let EmptyModelState() = Memory.makeEmpty false true
+        
         let IsConcreteMemoryEnabled() =
             match memoryMode with
             | ConcreteMemory -> true
@@ -285,17 +300,6 @@ module API =
             let newMode =
                 if value then ConcreteMemory else SymbolicMemory
             memoryMode <- newMode
-
-        let EmptyState() = Memory.makeEmpty false false
-
-        let EmptyModelState() = Memory.makeEmpty false true
-
-        let CopyState (state : state) = Memory.copy state state.pc
-
-        let EmptyModel method typeModel =
-            let modelState = Memory.makeEmpty true false
-            Memory.fillModelWithParametersAndThis modelState method
-            StateModel(modelState, typeModel, None)
 
         let PopFrame state = Memory.popFrame state
         let ForcePopFrames count state = Memory.forcePopFrames count state

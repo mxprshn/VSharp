@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <TargetFramework>netcoreapp6.0</TargetFramework>
@@ -39,9 +39,9 @@
         <Compile Include="RegionTree.fs" />
         <Compile Include="PrettyPrinting.fs" />
         <Compile Include="FileSystem.fs" />
-        <Compile Include="MemoryGraph.fs" />
         <Compile Include="Mocking.fs" />
         <Compile Include="MethodSequence.fs" />
+        <Compile Include="MemoryGraph.fs" />
         <Compile Include="UnitTest.fs" />
         <Compile Include="UnitTests.fs" />
         <Compile Include="TestResultsChecker.fs" />
