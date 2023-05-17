@@ -327,7 +327,7 @@ public static class MethodSequences
 
         return false;
     }
-    
+
     [TestSvm]
     public static int ByRefWithObject(ref int n, TestClass o)
     {
@@ -363,6 +363,54 @@ public static class MethodSequences
             {
                 return 0;
             }
+        }
+
+        return 1;
+    }
+
+    [TestSvm]
+    public static int StringAndClass(string str, TestClass cls)
+    {
+        if (cls.GetValue() > 5)
+        {
+            if ("str" == str)
+            {
+                return 1;
+            }
+
+            return 2;
+        }
+
+        return 1;
+    }
+
+    [TestSvm]
+    public static int IntAndClass(int i, TestClass cls)
+    {
+        if (cls.GetValue() > 5)
+        {
+            if (i == cls.GetValue())
+            {
+                return 1;
+            }
+
+            return 2;
+        }
+
+        return 1;
+    }
+
+    [TestSvm]
+    public static int IntArrayAndClass(int[] a, TestClass cls)
+    {
+        if (cls.GetValue() > 5)
+        {
+            if (a[5] == cls.GetValue())
+            {
+                return 3;
+            }
+
+            return 2;
         }
 
         return 1;

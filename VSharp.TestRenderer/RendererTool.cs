@@ -469,7 +469,7 @@ public static class Renderer
             ti = UnitTest.DeserializeTestInfo(stream);
         }
 
-        return UnitTest.DeserializeFromTestInfo(ti, true);
+        return UnitTest.DeserializeFromTestInfo(ti, true, false);
     }
 
     private static List<UnitTest> DeserializeTests(IEnumerable<FileInfo> tests)

@@ -123,11 +123,11 @@ type public SILI(options : SiliOptions) =
 
     let printSequence cilState =
         match cilState.state.model with
-        | StateModel(_, Some { sequence = sequence; keyMapping = keyMapping }) ->
+        | StateModel(_, Some { sequence = sequence; this = this; args = keyMapping }) ->
             Console.WriteLine $"Found sequence for:\n{Print.PrintPC cilState.state.pc}; location: {cilState.currentLoc}"
             let separator = "\n"
             Console.WriteLine $"{sequence |> List.map (fun c -> c.ToString()) |> join separator}"
-            Console.WriteLine $"Mapping: {PersistentDict.toSeq keyMapping |> Seq.toList}"
+            Console.WriteLine $"this: {this}; args: {PersistentDict.toSeq keyMapping |> Seq.toList}"
             Console.WriteLine()
         | _ ->
             Console.WriteLine $"No sequence found for PC:\n{Print.PrintPC cilState.state.pc}; location: {cilState.currentLoc}"

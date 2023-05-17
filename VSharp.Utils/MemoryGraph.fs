@@ -71,15 +71,12 @@ with
 
 [<CLIMutable>]
 [<Serializable>]
-[<XmlInclude(typeof<typeRepr>)>]
 type methodRepr = {
     declaringType : typeRepr
     token : int
 }
 with
     static member Encode(m : MethodBase) : methodRepr =
-        if not m.IsConstructedGenericMethod then
-            internalfail "Encoding not constructed generic methods not supported"
         {
             declaringType = typeRepr.Encode m.DeclaringType
             token = m.MetadataToken
@@ -91,9 +88,11 @@ with
             token = m.MetadataToken
         }
 
-    member x.Decode() =
+    member x.Decode() : MethodBase =
         let declaringType = x.declaringType.Decode()
-        declaringType.GetMethods() |> Seq.find (fun m -> m.MetadataToken = x.token)
+        match declaringType.GetMethods() |> Seq.tryFind (fun m -> m.MetadataToken = x.token) with
+        | Some m -> m
+        | None -> declaringType.GetConstructors() |> Seq.find (fun c -> c.MetadataToken = x.token) :> MethodBase
 
 [<CLIMutable>]
 [<Serializable>]
@@ -124,6 +123,8 @@ type pointerRepr = {
 type structureRepr = {
     typ : int
     fields : obj array
+    // To represent objects in memory as well as method sequence result simultaneously
+    methodSequenceRef : obj
 }
 
 [<CLIMutable>]
@@ -184,7 +185,7 @@ with
     member x.Decode() =
         let baseClass = x.baseClass.Decode()
         let interfaces = x.interfaces |> Array.map (fun i -> i.Decode())
-        let baseMethods = x.baseMethods |> Array.map (fun m -> m.Decode())
+        let baseMethods = x.baseMethods |> Array.map (fun m -> m.Decode() :?> MethodInfo)
         Mocking.Type.Deserialize x.name baseClass interfaces baseMethods x.methodImplementations
 
 [<CLIMutable>]
@@ -202,20 +203,12 @@ type memoryRepr = {
 
 [<CLIMutable>]
 [<Serializable>]
-type methodSequenceObjectRefRepr = {
-    index : int
-    typ : int
-}
-
-[<CLIMutable>]
-[<Serializable>]
 [<XmlInclude(typeof<structureRepr>)>]
 [<XmlInclude(typeof<referenceRepr>)>]
 [<XmlInclude(typeof<pointerRepr>)>]
 [<XmlInclude(typeof<arrayRepr>)>]
 [<XmlInclude(typeof<enumRepr>)>]
 [<XmlInclude(typeof<typeMockRepr>)>]
-[<XmlInclude(typeof<methodSequenceObjectRefRepr>)>]
 type methodSequenceCallRepr = {
     methodRepr : methodRepr
     resultObj : obj
@@ -225,9 +218,10 @@ type methodSequenceCallRepr = {
 
 [<CLIMutable>]
 [<Serializable>]
-[<XmlInclude(typeof<methodSequenceObjectRefRepr>)>]
+[<XmlInclude(typeof<referenceRepr>)>]
 type methodSequenceStructCtorRepr = {
-    resultObj : obj
+    typ : int
+    resultObj : referenceRepr
 }
 
 [<CLIMutable>]
@@ -237,26 +231,6 @@ type methodSequenceStructCtorRepr = {
 type methodSequenceRepr = {
     elements : obj array
 }
-with
-
-    static member Encode (sequence : methodSequenceElement list) (encodeVariable : variableId -> obj) =
-        let mapArg arg =
-            match arg with
-            | Variable id -> encodeVariable id
-            | Default _ -> null
-            | Hole _ -> failwith "Cannot encode method sequence with holes"
-        let encodeElement (e : methodSequenceElement) : obj =
-            match e with
-            | Call(method, resultVar, this, args) ->
-                {
-                    methodRepr = methodRepr.Encode method
-                    resultObj = bindToObj encodeVariable resultVar
-                    thisArg = bindToObj mapArg this
-                    args = List.map mapArg args |> List.toArray
-                }
-            | CreateDefaultStruct resultVar ->
-                { resultObj = encodeVariable resultVar }
-        { elements = List.map encodeElement sequence |> List.toArray }
 
 type public CompactArrayRepr = {
     array : Array
@@ -288,10 +262,15 @@ type MockStorage() =
     member x.TypeMocks
         with get() = mockedTypes
 
-type MemoryGraph(repr : memoryRepr, mockStorage : MockStorage, createCompactRepr : bool) =
+type MemoryGraph(repr : memoryRepr, sequenceReprs : methodSequenceRepr array, mockStorage : MockStorage, createCompactRepr : bool, createMethodSequences : bool) =
 
     let sourceTypes = List<Type>(repr.types |> Array.map (fun t -> t.Decode()))
     let compactRepresentations = Dictionary<obj, CompactArrayRepr>()
+
+    let methodSequenceReprs = List(sequenceReprs)
+    let methodSequenceObjectIndices = Dictionary<obj, int>()
+    let invokableMethodSequences = List<InvokableMethodSequence>()
+    let mutable methodSequenceObjectCounter = 0
 
     let createMockObject decode index =
         let mockType, t = mockStorage[index]
@@ -311,7 +290,15 @@ type MemoryGraph(repr : memoryRepr, mockStorage : MockStorage, createCompactRepr
                 internalfailf "Generating test: unable to create byref-like object (type = %O)" t
             if t.ContainsGenericParameters then
                 internalfailf "Generating test: unable to create object with generic type parameters (type = %O)" t
-            else System.Runtime.Serialization.FormatterServices.GetUninitializedObject(t)
+            else
+                let createdObject = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(t)
+                if createMethodSequences
+                then
+                    match repr.methodSequenceRef with
+                    | :? referenceRepr as ref ->
+                        methodSequenceObjectIndices[createdObject] <- ref.index
+                    | _ -> ()
+                createdObject
         | :? structureRepr as repr ->
             // Case for mocked structs or classes
             createMockObject allocateDefault repr.typ
@@ -325,22 +312,35 @@ type MemoryGraph(repr : memoryRepr, mockStorage : MockStorage, createCompactRepr
     let sourceObjects = List<obj>(repr.objects |> Array.map allocateDefault)
     let objReprs = List<obj>(repr.objects)
 
-    let rec decodeValue (obj : obj) =
+    let rec decodeValue (createMethodSequenceRefs : bool) (obj : obj) =
         match obj with
         | :? referenceRepr as repr ->
-            sourceObjects[repr.index]
+            let sourceObj = sourceObjects[repr.index]
+            let index = ref 0
+            if createMethodSequenceRefs && methodSequenceObjectIndices.TryGetValue(sourceObj, index)
+            then
+                let ref = { index = index.Value } : InvokableMethodSequenceRef
+                ref : obj
+            else sourceObj
         | :? pointerRepr -> __notImplemented__()
         | :? structureRepr as repr when repr.typ >= 0 ->
             // Case for structs or classes of .NET type
-            let t = sourceTypes[repr.typ]
-            if not t.IsValueType then
-                internalfailf "Expected value type inside object, but got representation of %s!" t.FullName
-            let obj = allocateDefault repr
-            decodeStructure repr obj
-            obj
+            if createMethodSequenceRefs && repr.methodSequenceRef <> null
+            then
+                match repr.methodSequenceRef with
+                | :? referenceRepr as ref ->
+                    { index = ref.index } : InvokableMethodSequenceRef
+                | _ -> internalfail "Unexpected type of method sequence object reference"
+            else
+                let t = sourceTypes[repr.typ]
+                if not t.IsValueType then
+                    internalfailf "Expected value type inside object, but got representation of %s!" t.FullName
+                let obj = allocateDefault repr
+                decodeStructure repr obj
+                obj
         | :? structureRepr as repr ->
             // Case for mocked structs or classes
-            let obj = createMockObject decodeValue repr.typ
+            let obj = createMockObject (decodeValue false) repr.typ
             decodeMockedStructure repr obj
             obj
         | :? arrayRepr -> internalfail "Unexpected array representation inside object!"
@@ -353,7 +353,7 @@ type MemoryGraph(repr : memoryRepr, mockStorage : MockStorage, createCompactRepr
         let fields = Reflection.fieldsOf false t
         assert(Array.length fields = Array.length fieldsRepr)
         let decodeField (_, field : FieldInfo) repr =
-            let value = decodeValue repr
+            let value = decodeValue false repr
             field.SetValue(obj, value)
         Array.iter2 decodeField fields fieldsRepr
 
@@ -377,15 +377,15 @@ type MemoryGraph(repr : memoryRepr, mockStorage : MockStorage, createCompactRepr
             | [|len|], null ->
                 let arr = obj :?> Array
                 assert(arr.Length = len)
-                repr.values |> Array.iteri (fun i r -> arr.SetValue(decodeValue r, i))
+                repr.values |> Array.iteri (fun i r -> arr.SetValue(decodeValue false r, i))
             | lens, lbs ->
                 repr.values |> Array.iteri (fun i r ->
-                    let value = decodeValue r
+                    let value = decodeValue false r
                     let indices = Array.delinearizeArrayIndex i lens lbs
                     arr.SetValue(value, indices))
         | _ ->
-            let defaultValue = decodeValue repr.defaultValue
-            let values = Array.map decodeValue repr.values
+            let defaultValue = decodeValue false repr.defaultValue
+            let values = Array.map (decodeValue false) repr.values
             Array.fill arr defaultValue
             Array.iter2 (fun (i : int[]) v -> arr.SetValue(v, i)) repr.indices values
             if createCompactRepr then
@@ -405,17 +405,54 @@ type MemoryGraph(repr : memoryRepr, mockStorage : MockStorage, createCompactRepr
                 | :? Delegate as d -> d.Method.DeclaringType
                 | _ -> obj.GetType()
             assert(t = mockInstanceType)
-            mockType.Update decodeValue mockInstanceType
+            mockType.Update (decodeValue false) mockInstanceType
             decodeMockedStructure repr obj
         | :? arrayRepr as repr ->
             decodeArray repr obj
         | _ -> ()
 
-    let () = Seq.iter2 decodeObject objReprs sourceObjects
+    let decodeMethodSequence (sequenceRepr : methodSequenceRepr) =
+        let decodeArgument (argRepr : obj) =
+            match argRepr with
+            | :? referenceRepr as repr when repr.index < 0 ->
+                invokableMethodSequenceArgument.Variable { index = repr.index }
+            | o -> invokableMethodSequenceArgument.Object(decodeValue false o)
 
-    member x.DecodeValue (obj : obj) = decodeValue obj
+        let decodeMethodSequenceElement (elementRepr : obj) =
+            match elementRepr with
+            | :? methodSequenceCallRepr as call ->
+                let method = call.methodRepr.Decode()
+                let resultRef =
+                    match call.resultObj with
+                    | :? referenceRepr as repr -> Some({ index = repr.index } : InvokableMethodSequenceRef)
+                    | null -> None
+                    | _ -> internalfail "Unexpected result object of call"
+                let this =
+                    match call.thisArg with
+                    | null -> None
+                    | thisArg -> Some(decodeArgument thisArg)
+                let args = call.args |> Array.map decodeArgument |> Array.toList
+                invokableMethodSequenceElement.Call(method, resultRef, this, args)
+            | :? methodSequenceStructCtorRepr as createStruct ->
+                let typ = sourceTypes[createStruct.typ]
+                let resultRef = { index = createStruct.resultObj.index } : InvokableMethodSequenceRef
+                invokableMethodSequenceElement.CreateDefaultStruct(typ, resultRef)
+            | _ -> internalfail "Unexpected method sequence element repr"
+
+        let decoded = sequenceRepr.elements |> Array.map decodeMethodSequenceElement |> Array.toList |> InvokableMethodSequence
+        invokableMethodSequences.Add decoded
+        ()
+
+    let () =
+        Seq.iter2 decodeObject objReprs sourceObjects
+        if createMethodSequences then
+            Seq.iter decodeMethodSequence methodSequenceReprs
+
+    member x.DecodeValue (obj : obj) = decodeValue createMethodSequences obj
 
     member x.CompactRepresentations() = compactRepresentations
+
+    member x.MethodSequences() = invokableMethodSequences
 
     member private x.IsSerializable (t : Type) =
         // TODO: find out which types can be serialized by XMLSerializer
@@ -456,7 +493,7 @@ type MemoryGraph(repr : memoryRepr, mockStorage : MockStorage, createCompactRepr
 
     member private x.CreateStructure (obj : obj) =
         let t = obj.GetType()
-        let repr : structureRepr = {typ = x.RegisterType t; fields = Array.empty}
+        let repr : structureRepr = {typ = x.RegisterType t; fields = Array.empty; methodSequenceRef = null}
         repr :> obj
 
     member private x.InitStructure (repr : structureRepr) (obj : obj) =
@@ -522,23 +559,23 @@ type MemoryGraph(repr : memoryRepr, mockStorage : MockStorage, createCompactRepr
                     let reference : referenceRepr = {index = idx}
                     reference :> obj
 
-    member x.RepresentStruct (typ : Type) (fields : obj array) =
-        let repr : structureRepr = {typ = x.RegisterType typ; fields = fields}
+    member x.RepresentStruct (typ : Type) (fields : obj array) (methodSequenceRef : obj) =
+        let repr : structureRepr = {typ = x.RegisterType typ; fields = fields; methodSequenceRef = methodSequenceRef }
         repr :> obj
 
     member x.RepresentMockedStruct (typ : Mocking.Type) (fields : obj array) =
-        let repr : structureRepr = {typ = mockStorage.RegisterMockedType typ; fields = fields}
+        let repr : structureRepr = {typ = mockStorage.RegisterMockedType typ; fields = fields; methodSequenceRef = null}
         repr :> obj
 
     member x.ReserveRepresentation() = x.Bind null null
 
-    member x.AddClass (typ : Type) (fields : obj array) index =
-        let repr : structureRepr = {typ = x.RegisterType typ; fields = fields}
+    member x.AddClass (typ : Type) (fields : obj array) index (methodSequenceRef : obj) =
+        let repr : structureRepr = {typ = x.RegisterType typ; fields = fields; methodSequenceRef = methodSequenceRef}
         objReprs.[index] <- repr
         { index = index }
 
     member x.AddMockedClass (typ : Mocking.Type) (fields : obj array) index =
-        let repr : structureRepr = {typ = mockStorage.RegisterMockedType typ; fields = fields}
+        let repr : structureRepr = {typ = mockStorage.RegisterMockedType typ; fields = fields; methodSequenceRef = null}
         objReprs.[index] <- repr
         { index = index }
 
@@ -552,9 +589,33 @@ type MemoryGraph(repr : memoryRepr, mockStorage : MockStorage, createCompactRepr
         objReprs.[index] <- repr
         { index = index }
 
+    member x.AddMethodSequenceCall (method : IMethod) (this : obj) (args : obj array) (hasNonVoidResult : bool) =
+        let resultObj : obj =
+            if hasNonVoidResult
+            then
+                methodSequenceObjectCounter <- methodSequenceObjectCounter - 1
+                { index = methodSequenceObjectCounter }
+            else null
+        {
+            methodRepr = methodRepr.Encode method
+            resultObj = resultObj
+            thisArg = this
+            args = args
+        }
+
+    member x.AddMethodSequenceStructCtor (typ : Type) =
+        methodSequenceObjectCounter <- methodSequenceObjectCounter - 1
+        let resultObj = { index = methodSequenceObjectCounter }
+        { typ = x.RegisterType typ; resultObj = resultObj }
+
+    member x.AddMethodSequence (elements : obj array) =
+        methodSequenceReprs.Add { elements = elements }
+
     member x.Serialize (target : memoryRepr) =
         let t = typeof<memoryRepr>
         let p = t.GetProperty("objects")
         p.SetValue(target, objReprs.ToArray())
         let p = t.GetProperty("types")
         p.SetValue(target, sourceTypes |> Seq.map typeRepr.Encode |> Array.ofSeq)
+
+    member x.SerializeMethodSequences() = Seq.toArray methodSequenceReprs

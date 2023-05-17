@@ -4,6 +4,7 @@ open System
 open System.Collections.Generic
 open System.Text
 open VSharp
+open VSharp.Core.API
 open VSharp.Interpreter.IL
 
 type internal methodSequenceState =
@@ -31,12 +32,15 @@ module internal MethodSequenceHelpers =
     let variableIndices = Dictionary<Type, int>()
 
     let mutable private currentId = 0u
-    
+
     let isPrimitive (t : Type) = t.IsPrimitive || t.IsEnum
 
-    // TODO: move to reflection
     let rec canBeCreatedBySolver (t : Type) =
-        isPrimitive t || t = typeof<string> || (t.IsArray && canBeCreatedBySolver <| t.GetElementType()) || (t.IsByRef && canBeCreatedBySolver <| t.GetElementType())
+        isPrimitive t ||
+            t = typeof<string> ||
+            (Types.IsNullable t && canBeCreatedBySolver <| Nullable.GetUnderlyingType t) ||
+            (t.IsArray && canBeCreatedBySolver <| t.GetElementType()) ||
+            (t.IsByRef && canBeCreatedBySolver <| t.GetElementType())
 
     let isStruct (t : Type) = t.IsValueType && not t.IsPrimitive && not t.IsEnum
 
@@ -58,9 +62,9 @@ module internal MethodSequenceHelpers =
             yield! state.currentSequence |> List.choose getElementMethod
             yield! state.upcomingSequence |> List.choose getElementMethod
         }
-        
+
     let hasInstanceThis (method : IMethod) = not method.IsConstructor && method.HasThis
-        
+
     let getThisAndParameterTypes (method : IMethod) =
         seq {
             if hasInstanceThis method then
@@ -93,11 +97,11 @@ module internal MethodSequenceHelpers =
     let getExistingObjectIds (state : methodSequenceState) =
         // TODO: we should also consider out vars
         state.currentSequence |> List.choose getReturnVar
-        
+
     let thisAndArguments (this : methodSequenceArgument option) (args : methodSequenceArgument list) =
         seq {
             match this with
             | Some this -> yield this
-            | None -> ()            
+            | None -> ()
             yield! args
         }

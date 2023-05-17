@@ -116,29 +116,25 @@ type internal MethodSequenceSearcher(maxSequenceLength : uint, backwardExplorerF
                 let stateToForward = statesInMethod.Dequeue()
                 Some stateToForward
 
-    let getKeyMapping (targetMethodElement : methodSequenceElement) =
+    let getThisAndArgs (targetMethodElement : methodSequenceElement) =
         match targetMethodElement with
         | Call(method, _, this, args) ->
-            let entries = seq {
+            let parameters = method.Parameters
+            let mapArgument(i, arg) =
+                match arg with
+                | Variable id ->
+                    Some(parameters[i], id)
+                | Default _ -> None
+                | Hole _ -> __unreachable__()
+            let thisId =
                 match this with
                 | Some this ->
                     match this with
-                    | Variable { typ = typ; index = index } ->
-                        yield (ThisKey method, TemporaryLocalVariableKey(typ, index))
-                    | Default _ -> ()
+                    | Variable id -> Some id
+                    | Default _ -> None
                     | Hole _ -> __unreachable__()
-                | _ -> ()
-
-                let parameters = method.Parameters
-
-                for i, arg in args |> List.indexed do
-                    match arg with
-                    | Variable { typ = typ; index = index } ->
-                        yield ParameterKey(parameters[i]), TemporaryLocalVariableKey(typ, index)
-                    | Default _ -> ()
-                    | Hole _ -> __unreachable__()
-            }
-            PersistentDict.ofSeq entries
+                | _ -> None
+            thisId, PersistentDict.ofSeq (args |> Seq.indexed |> Seq.choose mapArgument)
         | CreateDefaultStruct _ -> __unreachable__()
 
     let checkTarget (target : cilState) (state : methodSequenceState) =
@@ -169,9 +165,9 @@ type internal MethodSequenceSearcher(maxSequenceLength : uint, backwardExplorerF
             else
                 match checkSat() with
                 | Some modelState ->
-                    let keyMapping = getKeyMapping state.currentSequence.Head
+                    let thisId, argIds = getThisAndArgs state.currentSequence.Head
                     let sequence = List.rev state.currentSequence.Tail
-                    target.state.model <- StateModel(modelState, Some { sequence = sequence; keyMapping = keyMapping })
+                    target.state.model <- StateModel(modelState, Some { sequence = sequence; this = thisId; args = argIds })
                     finishedTargets[target] <- state
                     true
                 | None -> false
@@ -251,7 +247,7 @@ type internal MethodSequenceSearcher(maxSequenceLength : uint, backwardExplorerF
 
         if canConvertThis() && targetMethod.Parameters |> Array.forall canConvertArgument
         then
-            cilState.state.model <- StateModel(modelState, Some { sequence = []; keyMapping = PersistentDict.empty })
+            cilState.state.model <- StateModel(modelState, Some { sequence = []; this = None; args = PersistentDict.empty })
             true
         else false
 

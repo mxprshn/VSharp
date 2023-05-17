@@ -180,7 +180,7 @@ namespace VSharp
                     stopOnCoverageAchieved: 100,
                     methodSequenceStepsShare : 10,
                     generateTestsWithoutSequence : true,
-                    extraMethodSequenceSearchTimeout : 0,
+                    extraMethodSequenceSearchTimeout : 20,
                     maxMethodSequenceLength : UInt32.MaxValue
                 );
 

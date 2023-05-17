@@ -15,6 +15,7 @@ open VSharp
 [<XmlInclude(typeof<pointerRepr>)>]
 [<XmlInclude(typeof<enumRepr>)>]
 type testInfo = {
+    hasMethodSequence : bool
     assemblyName : string
     moduleFullyQualifiedName : string
     errorMessage : string
@@ -35,6 +36,7 @@ type testInfo = {
 }
 with
     static member OfMethod(m : MethodBase) = {
+        hasMethodSequence = false
         assemblyName = m.Module.Assembly.FullName
         moduleFullyQualifiedName = m.Module.FullyQualifiedName
         errorMessage = null
@@ -54,8 +56,8 @@ with
         extraAssemblyLoadDirs = Array.empty
     }
 
-type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorage, createCompactRepr : bool) =
-    let memoryGraph = MemoryGraph(info.memory, mockStorage, createCompactRepr)
+type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorage, createCompactRepr : bool, createMethodSequences : bool) =
+    let memoryGraph = MemoryGraph(info.memory, info.methodSequences, mockStorage, createCompactRepr, createMethodSequences)
     let exceptionInfo = info.throwsException
     let throwsException =
         if exceptionInfo = {assemblyName = null; moduleFullyQualifiedName = null; name = null; genericArgs = null} then null
@@ -66,12 +68,13 @@ type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorag
     let errorMessage = info.errorMessage
     let expectedResult = memoryGraph.DecodeValue info.expectedResult
     let compactRepresentations = memoryGraph.CompactRepresentations()
+    let hasMethodSequence = info.hasMethodSequence
 //    let classTypeParameters = info.classTypeParameters |> Array.map Serialization.decodeType
 //    let methodTypeParameters = info.methodTypeParameters |> Array.map Serialization.decodeType
     let mutable extraAssemblyLoadDirs : string list = [Directory.GetCurrentDirectory()]
 
     new(m : MethodBase) =
-        UnitTest(m, testInfo.OfMethod m, MockStorage(), false)
+        UnitTest(m, testInfo.OfMethod m, MockStorage(), false, false)
 
     member x.Method with get() = m
     member x.ThisArg
@@ -112,6 +115,14 @@ type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorag
     member x.TypeMocks with get() : ResizeArray<Mocking.Type> = mockStorage.TypeMocks
 
     member x.CompactRepresentations with get() = compactRepresentations
+
+    member x.HasMethodSequence
+        with get() = hasMethodSequence
+        and set (e : bool) =
+            let t = typeof<testInfo>
+            let p = t.GetProperty("hasMethodSequence")
+            p.SetValue(info, e)
+    member x.MethodSequences = memoryGraph.MethodSequences()
 
     member private x.SerializeMock (m : Mocking.Type option) =
         match m with
@@ -162,6 +173,8 @@ type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorag
             mockStorage.TypeMocks.ToArray()
             |> Array.map (fun m -> typeMockRepr.Encode m memoryGraph.Encode)
         typeMocksProperty.SetValue(info, typeMocks)
+        let methodSequencesProperty = t.GetProperty("methodSequences")
+        methodSequencesProperty.SetValue(info, memoryGraph.SerializeMethodSequences())
         let serializer = XmlSerializer t
         use stream = File.Create(destination)
         serializer.Serialize(stream, info)
@@ -174,7 +187,7 @@ type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorag
             let exn = InvalidDataException("Input test is incorrect", child)
             raise exn
 
-    static member DeserializeFromTestInfo(ti : testInfo, createCompactRepr : bool) =
+    static member DeserializeFromTestInfo(ti : testInfo, createCompactRepr : bool, createMethodSequences : bool) =
         try
             let mdle = Reflection.resolveModule ti.assemblyName ti.moduleFullyQualifiedName
             if mdle = null then
@@ -207,14 +220,14 @@ type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorag
                 Debug.Assert(declaringTypeIndex >= 0)
                 ti.memory.types[declaringTypeIndex] <- typeRepr.Encode concreteDeclaringType
 
-            UnitTest(method, ti, mockStorage, createCompactRepr)
+            UnitTest(method, ti, mockStorage, createCompactRepr, createMethodSequences)
         with child ->
             let exn = InvalidDataException("Input test is incorrect", child)
             raise exn
 
     static member Deserialize(stream : FileStream) =
         let testInfo = UnitTest.DeserializeTestInfo(stream)
-        UnitTest.DeserializeFromTestInfo(testInfo, false)
+        UnitTest.DeserializeFromTestInfo(testInfo, false, false)
 
     static member Deserialize(source : string) =
         use stream = new FileStream(source, FileMode.Open, FileAccess.Read)

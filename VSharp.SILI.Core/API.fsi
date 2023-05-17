@@ -139,6 +139,7 @@ module API =
         val IsPointer : Type -> bool
         val IsValueType : Type -> bool
         val IsArrayType : Type -> bool
+        val IsStruct : Type -> bool
         val (|Bool|_|) : Type -> unit option
         val (|StringType|_|) : Type -> unit option
 

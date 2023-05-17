@@ -7,6 +7,14 @@ open FSharpx.Collections
 open VSharp
 open VSharp.Core
 open System.Linq
+open VSharp.MethodSequences
+
+type testGeneratorCache = {
+    indices : Dictionary<concreteHeapAddress, int>
+    methodSequenceObjects : Dictionary<variableId, obj>
+    mockCache : Dictionary<ITypeMock, Mocking.Type>
+    implementations : IDictionary<MethodInfo, term[]>
+}
 
 module TestGenerator =
 
@@ -26,8 +34,9 @@ module TestGenerator =
             | _ -> Array.empty
         test.MemoryGraph.AddMockedClass mock fields index :> obj
 
-    let private obj2test eval encodeArr (indices : Dictionary<concreteHeapAddress, int>) encodeMock (test : UnitTest) addr typ =
+    let private obj2test eval encodeArr (cache : testGeneratorCache) encodeMock (test : UnitTest) addr typ (methodSequenceObjRef : obj) =
         let index = ref 0
+        let indices = cache.indices
         if indices.TryGetValue(addr, index) then
             let referenceRepr : referenceRepr = {index = index.Value}
             referenceRepr :> obj
@@ -71,7 +80,7 @@ module TestGenerator =
                     indices.Add(addr, index)
                     let fields = typ |> Reflection.fieldsOf false |> Array.map (fun (field, _) ->
                         ClassField(cha, field) |> eval)
-                    let repr = memoryGraph.AddClass typ fields index
+                    let repr = memoryGraph.AddClass typ fields index methodSequenceObjRef
                     repr :> obj
             | MockType mock when mock.IsValueType -> memoryGraph.RepresentMockedStruct (encodeMock mock) Array.empty
             | MockType mock ->
@@ -140,22 +149,33 @@ module TestGenerator =
             let indices = Array.map Array.ofList indices
             test.MemoryGraph.AddCompactArrayRepresentation typ defaultValue indices values lengths lowerBounds index
 
-    let rec private term2obj (model : model) state indices mockCache (implementations : IDictionary<MethodInfo, term[]>) (test : UnitTest) = function
+    let rec private term2obj (model : model) state (cache : testGeneratorCache) (test : UnitTest) (methodSequenceObjRef : obj) = function
         | {term = Concrete(_, TypeUtils.AddressType)} -> __unreachable__()
         | {term = Concrete(v, t)} when t.IsEnum -> test.MemoryGraph.RepresentEnum v
         | {term = Concrete(v, _)} -> v
         | {term = Nop} -> null
-        | {term = Constant _ } as c -> model.Eval c |> term2obj model state indices mockCache implementations test
+        | {term = Constant _ } as c -> model.Eval c |> term2obj model state cache test methodSequenceObjRef
         | {term = Struct(fields, t)} when Types.IsNullable t ->
             let valueField, hasValueField = Reflection.fieldsOfNullable t
-            let hasValue : bool = fields.[hasValueField] |> term2obj model state indices mockCache implementations test |> unbox
+            let hasValue : bool = fields.[hasValueField] |> term2obj model state cache test null |> unbox
             if hasValue then
-                fields.[valueField] |> term2obj model state indices mockCache implementations test
+                fields.[valueField] |> term2obj model state cache test null
             else null
-        | {term = Struct(fields, t)} ->
+        | {term = Struct(fields, t)} as term ->
+            let methodSequenceObjRef =
+                if methodSequenceObjRef <> null then methodSequenceObjRef
+                else
+                    let defaultStruct = Memory.DefaultOf t
+                    if term = defaultStruct
+                    then
+                        let structCtorRef = test.MemoryGraph.AddMethodSequenceStructCtor t
+                        test.MemoryGraph.AddMethodSequence [|structCtorRef|]
+                        structCtorRef.resultObj :> obj
+                    else null
             let fieldReprs =
-                t |> Reflection.fieldsOf false |> Array.map (fun (field, _) -> model.Eval fields.[field] |> model.Complete |> term2obj model state indices mockCache implementations test)
-            test.MemoryGraph.RepresentStruct t fieldReprs
+                t |> Reflection.fieldsOf false |>
+                    Array.map (fun (field, _) -> model.Eval fields.[field] |> model.Complete |> term2obj model state cache test null)
+            test.MemoryGraph.RepresentStruct t fieldReprs methodSequenceObjRef
         | NullRef _
         | NullPtr -> null
         | {term = HeapRef({term = ConcreteHeapAddress(addr)}, _)} when VectorTime.less addr state.startingTime ->
@@ -164,36 +184,36 @@ module TestGenerator =
                 match PersistentDict.tryFind modelState.allocatedTypes addr with
                 | Some typ ->
                     let eval address =
-                        address |> Ref |> Memory.Read modelState |> model.Complete |> term2obj model state indices mockCache implementations test
-                    let arr2Obj = encodeArrayCompactly state model (term2obj model state indices mockCache implementations test)
-                    let encodeMock = encodeTypeMock model state indices mockCache implementations test
-                    obj2test eval arr2Obj indices encodeMock test addr typ
+                        address |> Ref |> Memory.Read modelState |> model.Complete |> term2obj model state cache test null
+                    let arr2Obj = encodeArrayCompactly state model (term2obj model state cache test null)
+                    let encodeMock = encodeTypeMock model state cache test
+                    obj2test eval arr2Obj cache encodeMock test addr typ methodSequenceObjRef
                 // If address is not in the 'allocatedTypes', it should not be allocated, so result is 'null'
                 | None -> null
             | PrimitiveModel _ -> __unreachable__()
         | {term = HeapRef({term = ConcreteHeapAddress(addr)}, _)} ->
-            let term2Obj = model.Eval >> term2obj model state indices mockCache implementations test
+            let term2Obj = model.Eval >> term2obj model state cache test null
             let eval address =
                 address |> Ref |> Memory.Read state |> term2Obj
             let arr2Obj = encodeArrayCompactly state model term2Obj
             let typ = state.allocatedTypes[addr]
-            let encodeMock = encodeTypeMock model state indices mockCache implementations test
-            obj2test eval arr2Obj indices encodeMock test addr typ
+            let encodeMock = encodeTypeMock model state cache test
+            obj2test eval arr2Obj cache encodeMock test addr typ methodSequenceObjRef
         | Combined(terms, t) ->
             let slices = List.map model.Eval terms
             ReinterpretConcretes slices t
         | term -> internalfailf "creating object from term: unexpected term %O" term
 
-    and private encodeTypeMock (model : model) state indices (mockCache : Dictionary<ITypeMock, Mocking.Type>) (implementations : IDictionary<MethodInfo, term[]>) (test : UnitTest) mock : Mocking.Type =
+    and private encodeTypeMock (model : model) state (cache : testGeneratorCache) (test : UnitTest) mock : Mocking.Type =
         let mockedType = ref Mocking.Type.Empty
-        if mockCache.TryGetValue(mock, mockedType) then mockedType.Value
+        if cache.mockCache.TryGetValue(mock, mockedType) then mockedType.Value
         else
-            let eval = model.Eval >> term2obj model state indices mockCache implementations test
+            let eval = model.Eval >> term2obj model state cache test null
             let freshMock = Mocking.Type(mock.Name)
-            mockCache.Add(mock, freshMock)
+            cache.mockCache.Add(mock, freshMock)
             for t in mock.SuperTypes do
                 freshMock.AddSuperType t
-                for methodMock in implementations do
+                for methodMock in cache.implementations do
                     let method = methodMock.Key
                     let values = methodMock.Value
                     let methodType = method.ReflectedType
@@ -203,7 +223,40 @@ module TestGenerator =
                         freshMock.AddMethod(method, Array.map eval values)
             freshMock
 
-    let private model2test (test : UnitTest) isError indices mockCache (m : Method) model (cilState : cilState) message =
+    let encodeMethodSequence (model : model) state cache modelState (sequence : methodSequence) test =
+        let encodeArg (methodSequenceArgument : methodSequenceArgument) : obj =
+            match methodSequenceArgument with
+            | Default _ -> null
+            | Variable({ typ = typ; index = index } as varId) ->
+                let objRef = ref null
+                if cache.methodSequenceObjects.TryGetValue(varId, objRef) then
+                    objRef.Value
+                else
+                    let key = TemporaryLocalVariableKey(typ, index)
+                    let term = Memory.ReadLocalVariable modelState key |> model.Complete
+                    term2obj model state cache test null term
+            | Hole _ -> failwith "Can't encode method sequence with hole"
+        let encodeMethodSequenceElement (element : methodSequenceElement) : obj =
+            match element with
+            | Call(method, resultVar, this, args) ->
+                let thisRepr =
+                    match this with
+                    | Some thisArg -> encodeArg thisArg
+                    | None -> null
+                let argReprs = args |> List.map encodeArg |> List.toArray
+                let hasNonVoidResult = resultVar.IsSome
+                let callRepr = test.MemoryGraph.AddMethodSequenceCall method thisRepr argReprs hasNonVoidResult
+                if hasNonVoidResult
+                then cache.methodSequenceObjects[resultVar.Value] <- callRepr.resultObj
+                callRepr
+            | CreateDefaultStruct resultVar ->
+                let structCtorRepr = test.MemoryGraph.AddMethodSequenceStructCtor resultVar.typ
+                cache.methodSequenceObjects[resultVar] <- structCtorRepr.resultObj
+                structCtorRepr
+        let elementReprs = sequence.sequence |> List.map encodeMethodSequenceElement |> List.toArray
+        test.MemoryGraph.AddMethodSequence elementReprs
+
+    let private model2test (test : UnitTest) isError (cache : testGeneratorCache) (m : Method) model (cilState : cilState) message =
         let state = cilState.state
         let suitableState state =
             let methodHasByRefParameter = m.Parameters |> Seq.exists (fun pi -> pi.ParameterType.IsByRef)
@@ -215,21 +268,41 @@ module TestGenerator =
             then internalfail "Finished state has many frames on stack! (possibly unhandled exception)"
 
         match model with
-        | StateModel(modelState, _) ->
+        | StateModel(modelState, sequence) ->
             match SolveGenericMethodParameters state.typeStorage m with
             | None -> None
             | Some(classParams, methodParams) ->
-                let implementations = Dictionary<MethodInfo, term[]>()
+                let thisMethodSequenceRef, argMethodSequenceRefs =
+                    match sequence with
+                    | Some(sequence) ->
+                        test.HasMethodSequence <- true
+                        if (not <| List.isEmpty sequence.sequence) then
+                            encodeMethodSequence model state cache modelState sequence test
+                            let thisMethodSequenceRef =
+                                match sequence.this with
+                                | Some thisId -> cache.methodSequenceObjects[thisId]
+                                | None -> null
+                            let argMethodSequenceRefs = Dictionary<ParameterInfo, obj>()
+                            for pi, argId in PersistentDict.toSeq sequence.args do
+                                let objRef = ref null
+                                if cache.methodSequenceObjects.TryGetValue(argId, objRef)
+                                then
+                                    argMethodSequenceRefs[pi] <- objRef.Value
+                            thisMethodSequenceRef, argMethodSequenceRefs
+                        else
+                            null, Dictionary()
+                    | _ -> null, Dictionary()
+
                 for entry in state.methodMocks do
                     let mock = entry.Value
                     let values = mock.GetImplementationClauses()
-                    implementations.Add(mock.BaseMethod, values)
+                    cache.implementations.Add(mock.BaseMethod, values)
 
                 let concreteClassParams = Array.zeroCreate classParams.Length
                 let mockedClassParams = Array.zeroCreate classParams.Length
                 let concreteMethodParams = Array.zeroCreate methodParams.Length
                 let mockedMethodParams = Array.zeroCreate methodParams.Length
-                let encodeMock = encodeTypeMock model state indices mockCache implementations test
+                let encodeMock = encodeTypeMock model state cache test
                 let processSymbolicType (concreteArr : Type array) (mockArr : Mocking.Type option array) i = function
                     | ConcreteType t -> concreteArr[i] <- t
                     | MockType m -> mockArr[i] <- Some (encodeMock m)
@@ -242,7 +315,7 @@ module TestGenerator =
                 if state.complete then
                     for pi in parametersInfo do
                         let arg = Memory.ReadArgument state pi
-                        let concreteArg = term2obj model state indices mockCache implementations test arg
+                        let concreteArg = term2obj model state cache test (argMethodSequenceRefs.GetValueOrDefault(pi)) arg
                         test.AddArg (Array.head parametersInfo) concreteArg
                 else
                     for pi in parametersInfo do
@@ -252,8 +325,8 @@ module TestGenerator =
                                 let stackRef = Memory.ReadLocalVariable state key
                                 Memory.Read modelState stackRef
                             else
-                                Memory.ReadArgument modelState pi |> model.Complete
-                        let concreteValue : obj = term2obj model state indices mockCache implementations test value
+                                Memory.ReadArgument modelState pi |> model.Eval |> model.Complete
+                        let concreteValue : obj = term2obj model state cache test (argMethodSequenceRefs.GetValueOrDefault(pi)) value
                         test.AddArg pi concreteValue
 
                 if m.HasThis then
@@ -262,8 +335,8 @@ module TestGenerator =
                             let stackRef = Memory.ReadThis state m
                             Memory.Read modelState stackRef
                         else
-                            Memory.ReadThis modelState m |> model.Complete
-                    let concreteThis = term2obj model state indices mockCache implementations test thisTerm
+                            Memory.ReadThis modelState m |> model.Eval |> model.Complete
+                    let concreteThis = term2obj model state cache test thisMethodSequenceRef thisTerm
                     test.ThisArg <- concreteThis
 
                 let hasException, message =
@@ -274,7 +347,7 @@ module TestGenerator =
                         let message =
                             if isError && String.IsNullOrEmpty message then
                                 let messageReference = Memory.ReadField state e Reflection.exceptionMessageField |> model.Eval
-                                term2obj model state indices mockCache implementations test messageReference :?> string
+                                term2obj model state cache test null messageReference :?> string
                             else message
                         true, message
                     | _ -> false, message
@@ -283,13 +356,18 @@ module TestGenerator =
 
                 if not isError && not hasException then
                     let retVal = model.Eval cilState.Result
-                    test.Expected <- term2obj model state indices mockCache implementations test retVal
+                    test.Expected <- term2obj model state cache test null retVal
                 Some test
         | _ -> __unreachable__()
 
     let internal state2test isError (m : Method) (cilState : cilState) message =
-        let indices = Dictionary<concreteHeapAddress, int>()
-        let mockCache = Dictionary<ITypeMock, Mocking.Type>()
+        let cache =
+            {
+                indices = Dictionary<concreteHeapAddress, int>()
+                mockCache = Dictionary<ITypeMock, Mocking.Type>()
+                implementations = Dictionary<MethodInfo, term[]>()
+                methodSequenceObjects = Dictionary<variableId, obj>()
+            }
         let test = UnitTest((m :> IMethod).MethodBase)
 
-        model2test test isError indices mockCache m cilState.state.model cilState message
+        model2test test isError cache m cilState.state.model cilState message

@@ -202,6 +202,7 @@ module API =
         let IsValueType t = TypeUtils.isValueType t
         let IsNullable t = TypeUtils.isNullable t
         let IsArrayType t = TypeUtils.isArrayType t
+        let IsStruct t = TypeUtils.isStruct t
         let (|Bool|_|) t = if t = typeof<bool> then Some() else None
         let (|StringType|_|) t = TypeUtils.(|StringType|_|) t
 
@@ -282,7 +283,7 @@ module API =
 
     module public Memory =
         let EmptyState() = Memory.makeEmpty false false
-        
+
         let EmptyModel method =
             let modelState = Memory.makeEmpty true false
             Memory.fillModelWithParametersAndThis modelState method

@@ -2,6 +2,7 @@ namespace VSharp.Core
 
 open System
 open System.Collections.Generic
+open System.Reflection
 open VSharp
 open VSharp.Core
 open VSharp.MethodSequences
@@ -98,7 +99,7 @@ type arrayCopyInfo =
         override x.ToString() =
             sprintf "    source address: %O, from %O ranging %O elements into %O index with cast to %O;\n\r    updates: %O" x.srcAddress x.srcIndex x.length x.dstIndex x.dstSightType (MemoryRegion.toString "        " x.contents)
 
-type methodSequence = { sequence : methodSequenceElement list; keyMapping : pdict<stackKey, stackKey> }
+type methodSequence = { sequence : methodSequenceElement list; this : variableId option; args : pdict<ParameterInfo, variableId> }
 
 type model =
     | PrimitiveModel of IDictionary<ISymbolicConstantSource, term>

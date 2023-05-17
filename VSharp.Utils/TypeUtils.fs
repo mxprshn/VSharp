@@ -188,7 +188,7 @@ module TypeUtils =
         else [||]
 
     let (|StructType|_|) = function
-        | (t : Type) when t.IsValueType && not (isPrimitive t) && not t.IsGenericParameter -> Some(getGenericDefinition t, getGenericArguments t)
+        | (t : Type) when t.IsValueType && not (isPrimitive t) && not t.IsEnum && not t.IsGenericParameter -> Some(getGenericDefinition t, getGenericArguments t)
         | _ -> None
 
     let (|ClassType|_|) = function

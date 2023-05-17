@@ -213,7 +213,7 @@ type internal MethodSequenceForwardExplorer(interpreter : ILInterpreter) =
                 let ref = Memory.AllocateTemporaryLocalVariable state.cilState.state index typ defaultTerm
                 Memory.Read state.cilState.state ref
         (term, Variable <| { typ = typ; index = index }), {state with locals = state.locals.Add(typ, index + 1)}*)
-    
+
     let pop (state : methodSequenceState) =
         let newCoreState = Memory.CopyState state.cilState.state
         let newCilState = { state.cilState with state = newCoreState; id = CilStateOperations.getNextStateId() }
@@ -243,11 +243,11 @@ type internal MethodSequenceForwardExplorer(interpreter : ILInterpreter) =
                 let name = $"ret_{typ.Name}_{index}"
                 Memory.AllocateTemporaryLocalVariableOfType newCoreState name index typ |> ignore
             | None -> ()
-            
+
             let aliases = List<variableId * int>()
-            
+
             let isTargetMethod = List.isEmpty remainingMethods
-                    
+
             let argumentToTerm (index : int) (argument : methodSequenceArgument) =
                 let passByRef, withIndex =
                     let parameterInfo =
@@ -262,7 +262,7 @@ type internal MethodSequenceForwardExplorer(interpreter : ILInterpreter) =
                         false, None
                     | Some pi ->
                         pi.ParameterType.IsByRef, if isTargetMethod then Some(-pi.Position - 2) else None
-                
+
                 match argument with
                 | Variable({ typ = typ; index = varIndex } as varId) ->
                     if MethodSequenceHelpers.canBeCreatedBySolver typ then

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -14,12 +15,12 @@ namespace VSharp.TestRunner
             try
             {
                 testInfo ti;
-                using (FileStream stream = new FileStream(fileInfo.FullName, FileMode.Open, FileAccess.Read))
+                using (var stream = new FileStream(fileInfo.FullName, FileMode.Open, FileAccess.Read))
                 {
                     ti = UnitTest.DeserializeTestInfo(stream);
                 }
                 AssemblyManager.SetDependenciesDirs(ti.extraAssemblyLoadDirs);
-                UnitTest test = UnitTest.DeserializeFromTestInfo(ti, false);
+                var test = UnitTest.DeserializeFromTestInfo(ti, false, true);
 
                 var method = test.Method;
 
@@ -28,15 +29,15 @@ namespace VSharp.TestRunner
                     Console.Out.WriteLine("Result check is disabled");
                 if (suiteType == SuiteType.TestsOnly)
                     Console.Out.WriteLine("Error reproducing is disabled");
-                object[] parameters = test.Args ?? method.GetParameters()
+                var parameters = test.Args ?? method.GetParameters()
                     .Select(t => FormatterServices.GetUninitializedObject(t.ParameterType)).ToArray();
                 var ex = test.Exception;
+                var message = test.ErrorMessage;
                 try
                 {
                     object result;
-                    string message = test.ErrorMessage;
                     var debugAssertFailed = message != null && message.Contains("Debug.Assert failed");
-                    bool shouldInvoke = suiteType switch
+                    var shouldInvoke = suiteType switch
                     {
                         SuiteType.TestsOnly => !test.IsError || fileMode,
                         SuiteType.ErrorsOnly => test.IsError || fileMode,
@@ -45,7 +46,26 @@ namespace VSharp.TestRunner
                     };
                     if (shouldInvoke)
                     {
-                        result = method.Invoke(test.ThisArg, parameters);
+                        var methodSequenceObjects =
+                            test.MethodSequences.SelectMany(ms => ms.Invoke())
+                                .ToDictionary(kvp => (object)kvp.Key, kvp => kvp.Value);
+                        object ReplaceMethodSequenceRef(object o) => o is null ? null : methodSequenceObjects.GetValueOrDefault(o, o);
+                        if (test.HasMethodSequence)
+                        {
+                            foreach (var methodSequence in test.MethodSequences)
+                            {
+                                Console.WriteLine(methodSequence.ToString());
+                            }
+                            var thisString = test.ThisArg is null ? "" : $"{test.ThisArg}.";
+                            var paramsString = string.Join(", ", parameters);
+                            Console.WriteLine($"{thisString}{method.Name}({paramsString})");
+                        }
+                        else
+                        {
+                            Console.WriteLine("Test has no method sequence");
+                        }
+
+                        result = method.Invoke(ReplaceMethodSequenceRef(test.ThisArg), parameters.Select(ReplaceMethodSequenceRef).ToArray());
                     }
                     else
                     {
