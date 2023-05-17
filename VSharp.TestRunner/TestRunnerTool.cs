@@ -45,16 +45,7 @@ namespace VSharp.TestRunner
                     };
                     if (shouldInvoke)
                     {
-                        var invokableSequence = test.InvokableSequence;
-                        if (invokableSequence is not null)
-                        {
-                            Console.WriteLine($"Invoking the method sequence for {fileInfo.Name}");
-                            result = invokableSequence.Invoke();
-                        }
-                        else
-                        {
-                            result = method.Invoke(test.ThisArg, parameters);
-                        }
+                        result = method.Invoke(test.ThisArg, parameters);
                     }
                     else
                     {

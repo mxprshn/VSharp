@@ -71,7 +71,7 @@ type BasicBlock (method: MethodWithBody, startOffset: offset) =
         seq {
             while notEnd do
                 notEnd <- not <| LanguagePrimitives.PhysicalEquality instr endInstr
-                yield ILRewriter.PrintILInstr None None (method :> Core.IMethod).MethodBase instr
+                yield ILRewriter.PrintILInstr None None (method :> IMethod).MethodBase instr
                 instr <- instr.next
         }
 

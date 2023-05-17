@@ -31,7 +31,7 @@ type internal MethodSequenceBackwardExplorer(state : methodSequenceState) =
             Seq.map (fun pi -> (pi.GetSetMethod(), pi.PropertyType)) |>
             Seq.filter (fun (m, _) -> m <> null) |>
             Seq.map (fun (m, t) ->
-                Call(Application.getMethod m :> IMethod, None, [Variable id; MethodSequenceHelpers.createUnknownArgumentOfType t]))
+                Call(Application.getMethod m :> IMethod, None, Some <| Variable id, [MethodSequenceHelpers.createUnknownArgumentOfType t]))
 
     let getExistingArgumentsForHole typ isThis = seq {
         if not isThis && not <| MethodSequenceHelpers.isStruct typ then
@@ -54,22 +54,26 @@ type internal MethodSequenceBackwardExplorer(state : methodSequenceState) =
                 ctor.GetParameters() |>
                     Array.map (fun p -> MethodSequenceHelpers.createUnknownArgumentOfType p.ParameterType) |>
                     Array.toList
-            resultVarId, Call(Application.getMethod ctor :> IMethod, Some resultVarId, arguments)
+            resultVarId, Call(Application.getMethod ctor :> IMethod, Some resultVarId, None, arguments)
     }
 
     let steps = seq {
         match state.upcomingSequence with
-        | Call(method, res, arguments) :: remainingMethods ->
+        | Call(method, res, this, arguments) :: remainingMethods ->
             let isTargetMethod = List.isEmpty remainingMethods
-            let unwrapHoleType (i, argument) =
-                match argument with
-                | Hole typ when not <| MethodSequenceHelpers.canBeCreatedBySolver typ -> Some(i, typ)
-                | _ -> None
-            match List.indexed arguments |> List.tryPick unwrapHoleType with
+            let unmatchedHole =
+                let unwrapHoleType (i, argument) =
+                    match argument with
+                    | Hole typ -> Some(typ, false, i)
+                    | _ -> None
+                match this with
+                | Some(Hole typ) -> Some(typ, true, -1)
+                | _ -> List.indexed arguments |> List.tryPick unwrapHoleType
+            match unmatchedHole with
             | None ->
                 let isTheSameSetter existing newSetter =
                     match newSetter, existing with
-                    | Call(newMethod, _, [newReceiver; _]), Call(exisingMethod, _, [exisingReceiver; _]) ->
+                    | Call(newMethod, _, Some newReceiver, _), Call(exisingMethod, _, Some exisingReceiver, _) ->
                         newMethod = exisingMethod && newReceiver = exisingReceiver
                     | _ -> false
                 // If there is nothing to create, try to call setters
@@ -80,16 +84,23 @@ type internal MethodSequenceBackwardExplorer(state : methodSequenceState) =
                         Seq.filter (fun e -> not <| List.exists (isTheSameSetter e) state.upcomingSequence)
                 for call in settersCalls ->
                     { state with upcomingSequence = call :: state.upcomingSequence }
-            | Some(index, typ) ->
+            | Some(typ, isThis, index) ->
                 let withArgument arg = arguments |> List.mapi (fun i current -> if i = index then arg else current)
-                let isThis = method.HasThis && not method.IsConstructor
-                let unwrappedType = MethodSequenceHelpers.unwrapRefType typ
                 // First, try to substitute with existing arguments (default or locals)
-                for existingArgument in getExistingArgumentsForHole unwrappedType isThis ->
-                    { state with upcomingSequence = Call(method, res, withArgument existingArgument) :: state.upcomingSequence.Tail }
+                for existingArgument in getExistingArgumentsForHole typ (MethodSequenceHelpers.hasInstanceThis method) ->
+                    let call =
+                        if isThis
+                        then Call(method, res, Some existingArgument, arguments)
+                        else Call(method, res, this, withArgument existingArgument)
+                    { state with upcomingSequence = call :: state.upcomingSequence.Tail }
                 // Then, try to call different constructors
-                for resultVar, ctorCall in getConstructorsCalls unwrappedType ->
-                    { state with upcomingSequence = ctorCall :: Call(method, res, withArgument <| Variable resultVar) :: state.upcomingSequence.Tail }
+                for resultVar, ctorCall in getConstructorsCalls typ ->
+                    let resultArg = Variable resultVar
+                    let call =
+                        if isThis
+                        then Call(method, res, Some resultArg, arguments)
+                        else Call(method, res, this, withArgument resultArg)
+                    { state with upcomingSequence = ctorCall :: call :: state.upcomingSequence.Tail }
         | CreateDefaultStruct _ :: _-> ()
         | _ -> __unreachable__()
     }
@@ -145,7 +156,7 @@ type internal MethodSequenceForwardExplorer(interpreter : ILInterpreter) =
             cilState.state.evaluationStack <- newStack
             let result = Types.Cast result (if method.IsConstructor then method.DeclaringType else method.ReturnType)
             match state.currentSequence with
-            | methodSequenceElement.Call(_, Some({ typ = resultType; index = resultIdx }), _) :: _->
+            | methodSequenceElement.Call(_, Some({ typ = resultType; index = resultIdx }), _, _) :: _->
                 let resultKey = TemporaryLocalVariableKey(resultType, resultIdx)
                 Memory.WriteLocalVariable cilState.state resultKey result
             | _ -> __unreachable__()
@@ -226,7 +237,7 @@ type internal MethodSequenceForwardExplorer(interpreter : ILInterpreter) =
                         id = MethodSequenceHelpers.getNextStateId()
                 }
             ]
-        | Call(methodToCall, resVariable, arguments) as currentElement :: remainingMethods ->
+        | Call(methodToCall, resVariable, this, arguments) as currentElement :: remainingMethods ->
             match resVariable with
             | Some({ typ = typ; index = index }) ->
                 let name = $"ret_{typ.Name}_{index}"
@@ -283,10 +294,9 @@ type internal MethodSequenceForwardExplorer(interpreter : ILInterpreter) =
                     | Some idx ->
                         let ref = Memory.AllocateTemporaryLocalVariable newCoreState idx typ term
                         if passByRef then ref else Memory.Read newCoreState ref
-                | Hole _
-                | ConcretePrimitive _ -> __unreachable__()
+                | Hole _ -> __unreachable__()
 
-            let argumentTerms = arguments |> List.mapi argumentToTerm
+            let argumentTerms = MethodSequenceHelpers.thisAndArguments this arguments |> Seq.mapi argumentToTerm |> Seq.toList
             let wrapper = getWrapperMethod methodToCall
             interpreter.InitFunctionFrameCIL newCilState wrapper None (Some argumentTerms)
             [
@@ -296,7 +306,6 @@ type internal MethodSequenceForwardExplorer(interpreter : ILInterpreter) =
                         currentSequence = currentElement :: state.currentSequence
                         upcomingSequence = remainingMethods
                         id = MethodSequenceHelpers.getNextStateId()
-                        variableAliases = PersistentDict.ofSeq aliases
                 }
             ]
 

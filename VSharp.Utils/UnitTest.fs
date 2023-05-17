@@ -6,7 +6,6 @@ open System.IO
 open System.Reflection
 open System.Xml.Serialization
 open VSharp
-open VSharp.MethodSequences
 
 [<CLIMutable>]
 [<Serializable>]
@@ -31,7 +30,7 @@ type testInfo = {
     mockMethodTypeParameters : Nullable<int> array
     memory : memoryRepr
     typeMocks : typeMockRepr array
-    methodSequence : methodSequenceElementRepr array
+    methodSequences : methodSequenceRepr array
     extraAssemblyLoadDirs : string array
 }
 with
@@ -51,7 +50,7 @@ with
         throwsException = {assemblyName = null; moduleFullyQualifiedName = null; name = null; genericArgs = null}
         memory = {objects = Array.empty; types = Array.empty}
         typeMocks = Array.empty
-        methodSequence = Array.empty
+        methodSequences = Array.empty
         extraAssemblyLoadDirs = Array.empty
     }
 
@@ -67,9 +66,6 @@ type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorag
     let errorMessage = info.errorMessage
     let expectedResult = memoryGraph.DecodeValue info.expectedResult
     let compactRepresentations = memoryGraph.CompactRepresentations()
-    let invokableMethodSequence =
-        if info.methodSequence.Length = 0 then null
-        else InvokableMethodSequence(info.methodSequence)
 //    let classTypeParameters = info.classTypeParameters |> Array.map Serialization.decodeType
 //    let methodTypeParameters = info.methodTypeParameters |> Array.map Serialization.decodeType
     let mutable extraAssemblyLoadDirs : string list = [Directory.GetCurrentDirectory()]
@@ -116,15 +112,6 @@ type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorag
     member x.TypeMocks with get() : ResizeArray<Mocking.Type> = mockStorage.TypeMocks
 
     member x.CompactRepresentations with get() = compactRepresentations
-
-    member x.MethodSequence
-        with set (sequence : methodSequenceElement list) =
-            let reprs = Seq.map MethodSequence.elementToRepr sequence |> Seq.toArray
-            let t = typeof<testInfo>
-            let p = t.GetProperty("methodSequence")
-            p.SetValue(info, reprs)
-
-    member x.InvokableSequence with get() = invokableMethodSequence
 
     member private x.SerializeMock (m : Mocking.Type option) =
         match m with

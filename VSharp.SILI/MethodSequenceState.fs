@@ -12,7 +12,6 @@ type internal methodSequenceState =
         upcomingSequence : methodSequenceElement list
         currentSequence : methodSequenceElement list
         id : uint
-        variableAliases : pdict<variableId, int>
     }
 
     override x.ToString() =
@@ -51,7 +50,7 @@ module internal MethodSequenceHelpers =
 
     let getElementMethod (element : methodSequenceElement) =
         match element with
-        | methodSequenceElement.Call(method, _, _) -> Some method
+        | methodSequenceElement.Call(method, _, _, _) -> Some method
         | _ -> None
 
     let getAllMethods (state : methodSequenceState) =
@@ -72,10 +71,10 @@ module internal MethodSequenceHelpers =
 
     let getReturnVar (element : methodSequenceElement) =
         match element with
-        | Call(_, var, _) -> var
+        | Call(_, var, _, _) -> var
         | CreateDefaultStruct var -> Some var
 
-    let getFreshVariableId (typ : Type) =
+    let getFreshVariableId (typ : Type) : variableId =
         assert(not typ.IsByRef)
         let index = if variableIndices.ContainsKey typ then variableIndices[typ] else 0
         variableIndices[typ] <- index + 1
@@ -94,3 +93,11 @@ module internal MethodSequenceHelpers =
     let getExistingObjectIds (state : methodSequenceState) =
         // TODO: we should also consider out vars
         state.currentSequence |> List.choose getReturnVar
+        
+    let thisAndArguments (this : methodSequenceArgument option) (args : methodSequenceArgument list) =
+        seq {
+            match this with
+            | Some this -> yield this
+            | None -> ()            
+            yield! args
+        }

@@ -437,7 +437,7 @@ module TypeSolver =
 
     let private refineTypesInModel model (typeStorage : typeStorage) =
         match model with
-        | StateModel modelState ->
+        | StateModel(modelState, _) ->
             for entry in evalInModel model typeStorage do
                 let address = entry.Key
                 let typeForModel = entry.Value

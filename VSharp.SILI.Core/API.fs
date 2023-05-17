@@ -281,16 +281,17 @@ module API =
         let EmptyStack = EvaluationStack.empty
 
     module public Memory =
-        let EmptyState() = Memory.makeEmpty false
+        let EmptyState() = Memory.makeEmpty false false
+        
         let EmptyModel method =
-            let modelState = Memory.makeEmpty true
+            let modelState = Memory.makeEmpty true false
             Memory.fillModelWithParametersAndThis modelState method
-            StateModel modelState
-            
+            StateModel(modelState, None)
+
         let CopyState (state : state) = Memory.copy state state.pc
-        
+
         let EmptyModelState() = Memory.makeEmpty false true
-        
+
         let IsConcreteMemoryEnabled() =
             match memoryMode with
             | ConcreteMemory -> true
@@ -596,6 +597,7 @@ module API =
         let FillHoles state pc = PC.mapPC (Memory.fillHoles state) pc
 
         let Merge2States (s1 : state) (s2 : state) = Memory.merge2States s1 s2
+
         let Merge2Results (r1, s1 : state) (r2, s2 : state) = Memory.merge2Results (r1, s1) (r2, s2)
 //            let pc1 = PC.squashPC state1.pc
 //            let pc2 = PC.squashPC state2.pc

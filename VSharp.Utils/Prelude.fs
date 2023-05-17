@@ -52,6 +52,11 @@ module public Prelude =
 
     let inline public appIfNotNull f lhs rhs =
         if lhs = null then rhs else f lhs
+        
+    let inline bindToObj binder opt =
+        match opt with
+        | Some value -> binder value
+        | None -> null
 
     let inline public (|?) lhs rhs =
         if lhs = null then rhs else lhs

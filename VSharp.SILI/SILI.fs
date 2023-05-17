@@ -123,10 +123,11 @@ type public SILI(options : SiliOptions) =
 
     let printSequence cilState =
         match cilState.state.model with
-        | StateModel(_, _, Some methods) ->
+        | StateModel(_, Some { sequence = sequence; keyMapping = keyMapping }) ->
             Console.WriteLine $"Found sequence for:\n{Print.PrintPC cilState.state.pc}; location: {cilState.currentLoc}"
             let separator = "\n"
-            Console.WriteLine $"{methods |> List.map (fun c -> c.ToString()) |> join separator}"
+            Console.WriteLine $"{sequence |> List.map (fun c -> c.ToString()) |> join separator}"
+            Console.WriteLine $"Mapping: {PersistentDict.toSeq keyMapping |> Seq.toList}"
             Console.WriteLine()
         | _ ->
             Console.WriteLine $"No sequence found for PC:\n{Print.PrintPC cilState.state.pc}; location: {cilState.currentLoc}"
@@ -341,8 +342,9 @@ type public SILI(options : SiliOptions) =
     member private x.FormEntryPointInitialStates (method : Method, mainArguments : string[], initialState : state) : cilState list =
         try
             assert method.IsStatic
-            let optionArgs = if mainArguments = null then None else Some mainArguments
-            let state = { initialState with complete = mainArguments <> null }
+            let hasConcreteMainArguments = mainArguments <> null
+            let optionArgs = if not hasConcreteMainArguments then None else Some mainArguments
+            let state = { initialState with complete = hasConcreteMainArguments }
             state.model <- Memory.EmptyModel method
             let argsToState args =
                 let stringType = typeof<string>
@@ -360,7 +362,7 @@ type public SILI(options : SiliOptions) =
                 // Filling model with default args to match PC
                 let modelState =
                     match state.model with
-                    | StateModel modelState -> modelState
+                    | StateModel(modelState, _) -> modelState
                     | _ -> __unreachable__()
                 let argsForModel = Memory.AllocateVectorArray modelState (MakeNumber 0) typeof<String>
                 Memory.WriteLocalVariable modelState (ParameterKey argsParameter) argsForModel

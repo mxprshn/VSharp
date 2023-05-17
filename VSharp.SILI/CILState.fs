@@ -216,7 +216,7 @@ module internal CilStateOperations =
 
     let hasMethodSequence cilState =
         match cilState.state.model with
-        | StateModel(_, _, Some _) -> true
+        | StateModel(_, Some _) -> true
         | _ -> false
 
     // ------------------------------- Helper functions for cilState and state interaction -------------------------------

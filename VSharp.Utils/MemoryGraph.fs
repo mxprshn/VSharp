@@ -8,6 +8,8 @@ open System.Xml.Serialization
 open Microsoft.FSharp.Collections
 
 open VSharp
+open VSharp.MethodSequences
+
 
 [<CLIMutable>]
 [<Serializable>]
@@ -76,6 +78,14 @@ type methodRepr = {
 }
 with
     static member Encode(m : MethodBase) : methodRepr =
+        if not m.IsConstructedGenericMethod then
+            internalfail "Encoding not constructed generic methods not supported"
+        {
+            declaringType = typeRepr.Encode m.DeclaringType
+            token = m.MetadataToken
+        }
+
+    static member Encode(m : IMethod) : methodRepr =
         {
             declaringType = typeRepr.Encode m.DeclaringType
             token = m.MetadataToken
@@ -189,6 +199,64 @@ type memoryRepr = {
     objects : obj array
     types : typeRepr array
 }
+
+[<CLIMutable>]
+[<Serializable>]
+type methodSequenceObjectRefRepr = {
+    index : int
+    typ : int
+}
+
+[<CLIMutable>]
+[<Serializable>]
+[<XmlInclude(typeof<structureRepr>)>]
+[<XmlInclude(typeof<referenceRepr>)>]
+[<XmlInclude(typeof<pointerRepr>)>]
+[<XmlInclude(typeof<arrayRepr>)>]
+[<XmlInclude(typeof<enumRepr>)>]
+[<XmlInclude(typeof<typeMockRepr>)>]
+[<XmlInclude(typeof<methodSequenceObjectRefRepr>)>]
+type methodSequenceCallRepr = {
+    methodRepr : methodRepr
+    resultObj : obj
+    thisArg : obj
+    args : obj array
+}
+
+[<CLIMutable>]
+[<Serializable>]
+[<XmlInclude(typeof<methodSequenceObjectRefRepr>)>]
+type methodSequenceStructCtorRepr = {
+    resultObj : obj
+}
+
+[<CLIMutable>]
+[<Serializable>]
+[<XmlInclude(typeof<methodSequenceCallRepr>)>]
+[<XmlInclude(typeof<methodSequenceStructCtorRepr>)>]
+type methodSequenceRepr = {
+    elements : obj array
+}
+with
+
+    static member Encode (sequence : methodSequenceElement list) (encodeVariable : variableId -> obj) =
+        let mapArg arg =
+            match arg with
+            | Variable id -> encodeVariable id
+            | Default _ -> null
+            | Hole _ -> failwith "Cannot encode method sequence with holes"
+        let encodeElement (e : methodSequenceElement) : obj =
+            match e with
+            | Call(method, resultVar, this, args) ->
+                {
+                    methodRepr = methodRepr.Encode method
+                    resultObj = bindToObj encodeVariable resultVar
+                    thisArg = bindToObj mapArg this
+                    args = List.map mapArg args |> List.toArray
+                }
+            | CreateDefaultStruct resultVar ->
+                { resultObj = encodeVariable resultVar }
+        { elements = List.map encodeElement sequence |> List.toArray }
 
 type public CompactArrayRepr = {
     array : Array

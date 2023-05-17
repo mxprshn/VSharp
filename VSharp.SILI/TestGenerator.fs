@@ -89,7 +89,7 @@ module TestGenerator =
             let arrays =
                 if VectorTime.less cha VectorTime.zero then
                     match model with
-                    | StateModel modelState -> modelState.arrays
+                    | StateModel(modelState, _) -> modelState.arrays
                     | _ -> __unreachable__()
                 else
                     state.arrays
@@ -160,7 +160,7 @@ module TestGenerator =
         | NullPtr -> null
         | {term = HeapRef({term = ConcreteHeapAddress(addr)}, _)} when VectorTime.less addr state.startingTime ->
             match model with
-            | StateModel modelState ->
+            | StateModel(modelState, _) ->
                 match PersistentDict.tryFind modelState.allocatedTypes addr with
                 | Some typ ->
                     let eval address =
@@ -215,11 +215,7 @@ module TestGenerator =
             then internalfail "Finished state has many frames on stack! (possibly unhandled exception)"
 
         match model with
-        | StateModel modelState ->
-            match sequence with
-            | Some sequence ->
-                 test.MethodSequence <- sequence
-            | _ -> ()
+        | StateModel(modelState, _) ->
             match SolveGenericMethodParameters state.typeStorage m with
             | None -> None
             | Some(classParams, methodParams) ->

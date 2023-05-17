@@ -98,13 +98,15 @@ type arrayCopyInfo =
         override x.ToString() =
             sprintf "    source address: %O, from %O ranging %O elements into %O index with cast to %O;\n\r    updates: %O" x.srcAddress x.srcIndex x.length x.dstIndex x.dstSightType (MemoryRegion.toString "        " x.contents)
 
+type methodSequence = { sequence : methodSequenceElement list; keyMapping : pdict<stackKey, stackKey> }
+
 type model =
     | PrimitiveModel of IDictionary<ISymbolicConstantSource, term>
-    | StateModel of state
+    | StateModel of state * methodSequence option
 with
     member x.Complete value =
         match x with
-        | StateModel state when state.complete ->
+        | StateModel(state, _) when state.complete ->
             // TODO: ideally, here should go the full-fledged substitution, but we try to improve the performance a bit...
             match value.term with
             | Constant(_, _, typ) -> makeDefaultValue typ
@@ -122,8 +124,8 @@ with
         Substitution.substitute (function
             | { term = Constant(_, (:? IStatedSymbolicConstantSource as source), typ) } as term ->
                 match x with
-                | StateModel(state, _, None) -> source.Compose state
-                | StateModel(state, _, Some _) ->
+                | StateModel(state, None) -> source.Compose state
+                | StateModel(state, Some _) ->
                     let composed = source.Compose state
                     match state.model with
                     | StateModel _ as innerModel -> innerModel.Eval composed
@@ -133,14 +135,14 @@ with
                 let subst, complete =
                     match x with
                     | PrimitiveModel dict -> dict, true
-                    | StateModel state ->
+                    | StateModel(state, None) ->
                         match state.model with
                         | PrimitiveModel dict -> dict, state.complete
                         | _ -> __unreachable__()
-                    | StateModel(state, _, Some _) ->
+                    | StateModel(state, Some _) ->
                         match state.model with
                         | PrimitiveModel dict -> dict, state.complete
-                        | StateModel(innerState, _, _) ->
+                        | StateModel(innerState, _) ->
                             match innerState.model with
                             | PrimitiveModel dict -> dict, state.complete
                             | _ -> __unreachable__()
