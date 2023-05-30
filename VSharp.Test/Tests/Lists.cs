@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using NUnit.Framework;
@@ -191,6 +192,7 @@ namespace IntegrationTests
             a[2] = 42;
             return a;
         }
+
         [TestSvm(100)]
         public static int CopyAndBranch(int[] a, int i)
         {
@@ -252,7 +254,7 @@ namespace IntegrationTests
             return a;
         }
 
-        [TestSvm(86)]
+        [TestSvm(94)]
         public static int TestSolvingCopy(int[] a, int[] b, int i)
         {
             if (a.Length > b.Length && 0 <= i && i < b.Length)
@@ -325,7 +327,7 @@ namespace IntegrationTests
             return 3;
         }
 
-        [TestSvm(88)]
+        [TestSvm(97)]
         public static int TestSolvingCopy3(int[] a, int[] b, int[] c)
         {
             if (a != null && b != null && c != null && a.Length > b.Length && b.Length > c.Length && c.Length > 3)
@@ -392,7 +394,7 @@ namespace IntegrationTests
             return 3;
         }
 
-        [TestSvm(88)]
+        [TestSvm(93)]
         public static int TestOverlappingCopy(int[] a)
         {
             if (a != null && a.Length > 5)
@@ -527,7 +529,7 @@ namespace IntegrationTests
             return arr;
         }
 
-        [TestSvm(83)]
+        [TestSvm(90)]
         public static int TestConnectionBetweenIndicesAndValues(int[] a, int i, int j)
         {
             int x = a[i];
@@ -538,7 +540,7 @@ namespace IntegrationTests
             return res;
         }
 
-        [TestSvm(83)]
+        [TestSvm(92)]
         public static int TestConnectionBetweenMultiIndicesAndValues(int[,] a, int i, int j, int f, int g)
         {
             int x = a[i, j];
@@ -554,7 +556,7 @@ namespace IntegrationTests
             public int x;
         }
 
-        [TestSvm(83)]
+        [TestSvm(90)]
         public static int ArrayElementsAreReferences(MyClass[] a, int i, int j)
         {
             MyClass x = a[i];
@@ -565,7 +567,7 @@ namespace IntegrationTests
             return res;
         }
 
-        [TestSvm(80)]
+        [TestSvm(90)]
         public static bool ArraySymbolicUpdate(int i)
         {
             var array = new int[] {1, 2, 3, 4, 5};
@@ -576,7 +578,7 @@ namespace IntegrationTests
                 return true;
         }
 
-        [TestSvm(83)]
+        [TestSvm(92)]
         public static bool ArraySymbolicUpdate2(int i)
         {
             var array = new int[] {1, 2, 3, 4, 5};
@@ -588,7 +590,7 @@ namespace IntegrationTests
                 return true;
         }
 
-        [TestSvm(86)]
+        [TestSvm(97)]
         public static bool ArraySymbolicUpdate3(int i, int j)
         {
             var array = new int[] {1, 2, 3, 4, 5};
@@ -656,6 +658,25 @@ namespace IntegrationTests
             }
 
             return -12;
+        }
+
+        [Ignore("Fix core")]
+        public static int HashtableTest(int a)
+        {
+            Hashtable dataHashtable = new Hashtable();
+            dataHashtable[0] = 0;
+            dataHashtable[1] = 1;
+            dataHashtable[2] = a;
+            dataHashtable[a] = 0;
+            int data = (int) dataHashtable[2];
+            int[] array = null;
+            if (data > 0)
+            {
+                array = new int[data];
+            }
+
+            array[0] = 5;
+            return array[0];
         }
 
         [Ignore("Support rendering recursive arrays")]
