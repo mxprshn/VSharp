@@ -21,7 +21,7 @@ type cilState =
       mutable initialEvaluationStackSize : uint32
       mutable stepsNumber : uint
       mutable suspended : bool
-      mutable targets : Set<codeLocation> option
+      mutable targets : Set<codeLocation>
       mutable lastPushInfo : term option
       /// <summary>
       /// All basic blocks visited by the state.
@@ -79,7 +79,7 @@ module internal CilStateOperations =
           initialEvaluationStackSize = initialEvaluationStackSize
           stepsNumber = 0u
           suspended = false
-          targets = None
+          targets = Set.empty
           lastPushInfo = None
           history = Set.empty
           entryMethod = Some entryMethod
@@ -128,7 +128,7 @@ module internal CilStateOperations =
 
     let hasRuntimeException (s : cilState) =
         match s.state.exceptionsRegister with
-        | Unhandled(_, isRuntime) -> isRuntime
+        | Unhandled(_, isRuntime, _) -> isRuntime
         | _ -> false
 
     let isStopped s = isIIEState s || stoppedByException s || not(isExecutable(s))
@@ -140,7 +140,7 @@ module internal CilStateOperations =
     let violatesLevel (s : cilState) maxBound =
         match tryCurrentLoc s with
         | Some currLoc when PersistentDict.contains currLoc s.level ->
-            s.level.[currLoc] >= maxBound
+            s.level[currLoc] >= maxBound
         | _ -> false
 
     // [NOTE] Obtaining exploring method
@@ -169,6 +169,7 @@ module internal CilStateOperations =
 
     let setCurrentIp (ip : ip) (cilState : cilState) =
         moveCodeLoc cilState ip
+        assert(List.isEmpty cilState.ipStack |> not)
         cilState.ipStack <- ip :: List.tail cilState.ipStack
 
     let setIpStack (ipStack : ipStack) (cilState : cilState) = cilState.ipStack <- ipStack
@@ -199,16 +200,19 @@ module internal CilStateOperations =
                             startingIP = cilState1.startingIP; iie = iie; id = getNextStateId()}
         List.map makeResultState states
 
-    let incrementLevel (cilState : cilState) k =
+    let incrementLevel (cilState : cilState) codeLocation =
         let lvl = cilState.level
-        let oldValue = PersistentDict.tryFind lvl k |> Option.defaultValue 0u
-        cilState.level <- PersistentDict.add k (oldValue + 1u) lvl
+        let oldValue = PersistentDict.tryFind lvl codeLocation |> Option.defaultValue 0u
+        cilState.level <- PersistentDict.add codeLocation (oldValue + 1u) lvl
 
-    let decrementLevel (cilState : cilState) k =
+    let decrementLevel (cilState : cilState) codeLocation =
         let lvl = cilState.level
-        let oldValue = PersistentDict.tryFind lvl k
+        let oldValue = PersistentDict.tryFind lvl codeLocation
         match oldValue with
-        | Some value when value > 0u -> cilState.level <- PersistentDict.add k (value - 1u) lvl
+        | Some value when value = 1u ->
+            cilState.level <- PersistentDict.remove codeLocation lvl
+        | Some value when value > 0u ->
+            cilState.level <- PersistentDict.add codeLocation (value - 1u) lvl
         | _ -> ()
 
     let addLocationToHistory (cilState : cilState) (loc : codeLocation) =
@@ -275,24 +279,14 @@ module internal CilStateOperations =
         push value afterCall
 
     let addTarget (state : cilState) target =
-        match state.targets with
-        | Some targets -> state.targets <- Some (Set.add target targets)
-        | None -> state.targets <- Some (Set.add target Set.empty)
+        let prev = state.targets
+        state.targets <- Set.add target prev
+        prev.Count <> state.targets.Count
 
     let removeTarget (state : cilState) target =
-        match state.targets with
-        | Some targets ->
-            let newTargets = Set.remove target targets
-            if newTargets.Count = 0 then
-                state.targets <- None
-            else
-                state.targets <- Some <| Set.remove target targets
-        | None -> ()
-
-    let checkTargets (state : cilState) =
-        match state.targets with
-        | Some targets -> targets.Count <> 0
-        | None -> true
+        let prev = state.targets
+        state.targets <- Set.remove target prev
+        prev.Count <> state.targets.Count
 
     // ------------------------------- Helper functions for cilState -------------------------------
 

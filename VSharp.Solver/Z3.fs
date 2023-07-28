@@ -157,11 +157,7 @@ module internal Z3 =
             | False -> TrueExpr
             | _ -> ctx.MkNot expr
 
-        member private x.MkEq(left, right) =
-            if left = right then TrueExpr
-            else ctx.MkEq(left, right)
-
-        member x.MkAnd(left, right) =
+        member private x.MkAnd(left, right) =
             match left, right with
             | _ when left = right -> left
             | True, _ -> right
@@ -170,7 +166,7 @@ module internal Z3 =
             | _, False -> right
             | _ -> ctx.MkAnd(left, right)
 
-        member x.MkOr(left, right) =
+        member private x.MkOr(left, right) =
             match left, right with
             | _ when left = right -> left
             | True, _ -> left
@@ -202,33 +198,144 @@ module internal Z3 =
             | Seq.Cons(head, tail) when Seq.isEmpty tail -> head
             | elems -> ctx.MkOr(elems)
 
-        member x.MkOr ([<ParamArray>] elems : BoolExpr[]) =
+        member private x.MkOr ([<ParamArray>] elems : BoolExpr[]) =
             if Array.contains TrueExpr elems then TrueExpr
             else
                 let nonFalseElems = Array.filter (fun elem -> elem <> FalseExpr) elems
                 x.SimplifyOrElements nonFalseElems
 
-        member x.MkOr (elems : BoolExpr seq) =
+        member private x.MkOr (elems : BoolExpr seq) =
             if Seq.contains TrueExpr elems then TrueExpr
             else
                 let nonFalseElems = Seq.filter (fun elem -> elem <> FalseExpr) elems
                 x.SimplifyOrElements nonFalseElems
 
-        member x.MkITE(cond : BoolExpr, thenExpr, elseExpr) : Expr =
-            match cond with
-            | True -> thenExpr
-            | False -> elseExpr
+        member private x.MkITE(cond : BoolExpr, thenExpr, elseExpr) : Expr =
+            match cond, thenExpr, elseExpr with
+            | True, _, _ -> thenExpr
+            | False, _, _ -> elseExpr
+            | _, (:? BitVecExpr as thenExpr), (:? BitVecExpr as elseExpr) ->
+                let thenExpr, elseExpr = x.ExtendIfNeed (thenExpr, elseExpr) true
+                ctx.MkITE(cond, thenExpr, elseExpr)
             | _ -> ctx.MkITE(cond, thenExpr, elseExpr)
 
 // ------------------------------- Encoding: arithmetic simplifications -------------------------------
 
-        member x.MkBVSLE(left, right) : BoolExpr =
-            if left = right then TrueExpr
-            else ctx.MkBVSLE(left, right)
+        member private x.ExtendIfNeed (x : BitVecExpr, y : BitVecExpr as args) isSigned =
+            let difference = int x.SortSize - int y.SortSize
+            if difference = 0 then args
+            else
+                let extend = if isSigned then ctx.MkSignExt else ctx.MkZeroExt
+                if difference > 0 then x, extend(uint32 difference, y)
+                else extend(uint32 -difference, x), y
 
-        member x.MkBVSGE(left, right) : BoolExpr =
-            if left = right then TrueExpr
-            else ctx.MkBVSGE(left, right)
+        member private x.MkEq(left : Expr, right : Expr) =
+            match left, right with
+            | _ when left = right -> TrueExpr
+            | :? BitVecExpr as l, (:? BitVecExpr as r) ->
+                x.ExtendIfNeed(l, r) true |> ctx.MkEq
+            | _ -> ctx.MkEq(left, right)
+
+        member private x.MkBVSGT(left, right as operands) : BoolExpr =
+            match left, right with
+            | _ when left = right -> FalseExpr
+            | _ -> x.ExtendIfNeed operands true |> ctx.MkBVSGT
+
+        member private x.MkBVUGT(left, right as operands) : BoolExpr =
+            match left, right with
+            | _ when left = right -> FalseExpr
+            | _ -> x.ExtendIfNeed operands false |> ctx.MkBVUGT
+
+        member private x.MkBVSGE(left, right as operands) : BoolExpr =
+            match left, right with
+            | _ when left = right -> TrueExpr
+            | _ -> x.ExtendIfNeed operands true |> ctx.MkBVSGE
+
+        member private x.MkBVUGE(left, right as operands) : BoolExpr =
+            match left, right with
+            | _ when left = right -> TrueExpr
+            | _ -> x.ExtendIfNeed operands false |> ctx.MkBVUGE
+
+        member private x.MkBVSLT(left, right as operands) : BoolExpr =
+            match left, right with
+            | _ when left = right -> FalseExpr
+            | _ -> x.ExtendIfNeed operands true |> ctx.MkBVSLT
+
+        member private x.MkBVULT(left, right as operands) : BoolExpr =
+            match left, right with
+            | _ when left = right -> FalseExpr
+            | _ -> x.ExtendIfNeed operands false |> ctx.MkBVULT
+
+        member private x.MkBVSLE(left, right as operands) : BoolExpr =
+            match left, right with
+            | _ when left = right -> TrueExpr
+            | _ -> x.ExtendIfNeed operands true |> ctx.MkBVSLE
+
+        member private x.MkBVULE(left, right as operands) : BoolExpr =
+            match left, right with
+            | _ when left = right -> TrueExpr
+            | _ -> x.ExtendIfNeed operands false |> ctx.MkBVULE
+
+        member private x.MkBVAnd operands : BitVecExpr =
+            x.ExtendIfNeed operands false |> ctx.MkBVAND
+
+        member private x.MkBVOr operands : BitVecExpr =
+            x.ExtendIfNeed operands false |> ctx.MkBVOR
+
+        member private x.MkBVXor operands : BitVecExpr =
+            x.ExtendIfNeed operands false |> ctx.MkBVXOR
+
+        member private x.MkBVShl operands : BitVecExpr =
+            x.ExtendIfNeed operands true |> ctx.MkBVSHL
+
+        member private x.MkBVAShr operands : BitVecExpr =
+            x.ExtendIfNeed operands true |> ctx.MkBVASHR
+
+        member private x.MkBVLShr operands : BitVecExpr =
+            x.ExtendIfNeed operands true |> ctx.MkBVLSHR
+
+        member private x.MkBVAdd operands : BitVecExpr =
+            x.ExtendIfNeed operands true |> ctx.MkBVAdd
+
+        member private x.MkBVAddNoUnderflow operands : BoolExpr =
+            x.ExtendIfNeed operands true |> ctx.MkBVAddNoUnderflow
+
+        member private x.MkBVAddNoOverflow operands : BoolExpr =
+            let left, right = x.ExtendIfNeed operands true
+            ctx.MkBVAddNoOverflow(left, right, true)
+
+        member private x.MkBVMul operands : BitVecExpr =
+            x.ExtendIfNeed operands true |> ctx.MkBVMul
+
+        member private x.MkBVMulNoUnderflow operands : BoolExpr =
+            x.ExtendIfNeed operands true |> ctx.MkBVMulNoUnderflow
+
+        member private x.MkBVMulNoOverflow operands : BoolExpr =
+            let left, right = x.ExtendIfNeed operands true
+            ctx.MkBVMulNoOverflow(left, right, true)
+
+        member private x.MkBVSub operands : BitVecExpr =
+            x.ExtendIfNeed operands true |> ctx.MkBVSub
+
+        member private x.MkBVSDiv operands : BitVecExpr =
+            x.ExtendIfNeed operands true |> ctx.MkBVSDiv
+
+        member private x.MkBVUDiv operands : BitVecExpr =
+            x.ExtendIfNeed operands false |> ctx.MkBVUDiv
+
+        member private x.MkBVSRem operands : BitVecExpr =
+            x.ExtendIfNeed operands true |> ctx.MkBVSRem
+
+        member private x.MkBVURem operands : BitVecExpr =
+            x.ExtendIfNeed operands false |> ctx.MkBVURem
+
+        member private x.Max (left : BitVecExpr) (right : BitVecExpr) =
+            assert(left.SortSize = right.SortSize)
+            x.MkITE(x.MkBVSGT(left, right), left, right) :?> BitVecExpr
+
+        member private x.Min (left : BitVecExpr) (right : BitVecExpr) =
+            assert(left.SortSize = right.SortSize)
+            x.MkITE(x.MkBVSGT(left, right), right, left) :?> BitVecExpr
 
 // ------------------------------- Encoding: common -------------------------------
 
@@ -281,61 +388,53 @@ module internal Z3 =
 
 // ------------------------------- Encoding: expression -------------------------------
 
-        // [NOTE] using signed extend, because both arguments of shift are signed (always)
-        member private x.ExtendIfNeed (x : BitVecExpr, y : BitVecExpr as args) =
-            let difference = int x.SortSize - int y.SortSize
-            if difference = 0 then args
-            elif difference > 0 then
-                x, ctx.MkSignExt(uint32 difference, y)
-            else
-                ctx.MkSignExt(uint32 -difference, x), y
-
         member private x.EncodeOperation encCtx operation args =
             match operation with
             | OperationType.BitwiseNot -> x.MakeUnary encCtx ctx.MkBVNot args
-            | OperationType.BitwiseAnd -> x.MakeBinary encCtx ctx.MkBVAND args
-            | OperationType.BitwiseOr -> x.MakeBinary encCtx ctx.MkBVOR args
-            | OperationType.BitwiseXor -> x.MakeBinary encCtx ctx.MkBVXOR args
+            | OperationType.BitwiseAnd -> x.MakeBinary encCtx x.MkBVAnd args
+            | OperationType.BitwiseOr -> x.MakeBinary encCtx x.MkBVOr args
+            | OperationType.BitwiseXor -> x.MakeBinary encCtx x.MkBVXor args
             // [NOTE] IL specifies: arguments of SHL, SHR, SHR.UN are (int32 and int32), (int64 and int32)
             // So it's needed to extend one of them for Z3
-            | OperationType.ShiftLeft -> x.MakeBinary encCtx (x.ExtendIfNeed >> ctx.MkBVSHL) args
-            | OperationType.ShiftRight -> x.MakeBinary encCtx (x.ExtendIfNeed >> ctx.MkBVASHR) args
-            | OperationType.ShiftRight_Un -> x.MakeBinary encCtx (x.ExtendIfNeed >> ctx.MkBVLSHR) args
+            | OperationType.ShiftLeft -> x.MakeBinary encCtx x.MkBVShl args
+            | OperationType.ShiftRight -> x.MakeBinary encCtx x.MkBVAShr args
+            | OperationType.ShiftRight_Un -> x.MakeBinary encCtx x.MkBVLShr args
             | OperationType.LogicalNot -> x.MakeUnary encCtx x.MkNot args
             | OperationType.LogicalAnd -> x.MakeOperation encCtx x.MkAnd args
             | OperationType.LogicalOr -> x.MakeOperation encCtx x.MkOr args
             | OperationType.LogicalXor -> x.MakeOperation encCtx ctx.MkXor args
             | OperationType.Equal -> x.MakeBinary encCtx x.MkEq args
             | OperationType.NotEqual -> x.MakeBinary encCtx (x.MkNot << x.MkEq) args
-            | OperationType.Greater -> x.MakeBinary encCtx ctx.MkBVSGT args
-            | OperationType.Greater_Un -> x.MakeBinary encCtx ctx.MkBVUGT args
+            | OperationType.Greater -> x.MakeBinary encCtx x.MkBVSGT args
+            | OperationType.Greater_Un -> x.MakeBinary encCtx x.MkBVUGT args
             | OperationType.GreaterOrEqual -> x.MakeBinary encCtx x.MkBVSGE args
-            | OperationType.GreaterOrEqual_Un -> x.MakeBinary encCtx ctx.MkBVUGE args
-            | OperationType.Less -> x.MakeBinary encCtx ctx.MkBVSLT args
-            | OperationType.Less_Un -> x.MakeBinary encCtx ctx.MkBVULT args
+            | OperationType.GreaterOrEqual_Un -> x.MakeBinary encCtx x.MkBVUGE args
+            | OperationType.Less -> x.MakeBinary encCtx x.MkBVSLT args
+            | OperationType.Less_Un -> x.MakeBinary encCtx x.MkBVULT args
             | OperationType.LessOrEqual -> x.MakeBinary encCtx x.MkBVSLE args
-            | OperationType.LessOrEqual_Un -> x.MakeBinary encCtx ctx.MkBVULE args
-            | OperationType.Add -> x.MakeBinary encCtx ctx.MkBVAdd args
+            | OperationType.LessOrEqual_Un -> x.MakeBinary encCtx x.MkBVULE args
+            | OperationType.Add -> x.MakeBinary encCtx x.MkBVAdd args
             | OperationType.AddNoOvf ->
                 let operation (l, r) =
-                    x.MkAnd(ctx.MkBVAddNoUnderflow(l, r), ctx.MkBVAddNoOverflow(l, r, true))
+                    x.MkAnd(x.MkBVAddNoUnderflow(l, r), x.MkBVAddNoOverflow(l, r))
                 x.MakeBinary encCtx operation args
-            | OperationType.Multiply -> x.MakeBinary encCtx ctx.MkBVMul args
+            | OperationType.Multiply -> x.MakeBinary encCtx x.MkBVMul args
             | OperationType.MultiplyNoOvf ->
                 let operation (l, r) =
-                    x.MkAnd(ctx.MkBVMulNoUnderflow(l, r), ctx.MkBVMulNoOverflow(l, r, true))
+                    x.MkAnd(x.MkBVMulNoUnderflow(l, r), x.MkBVMulNoOverflow(l, r))
                 x.MakeBinary encCtx operation args
-            | OperationType.Subtract -> x.MakeBinary encCtx ctx.MkBVSub args
-            | OperationType.Divide -> x.MakeBinary encCtx ctx.MkBVSDiv args
-            | OperationType.Divide_Un -> x.MakeBinary encCtx ctx.MkBVUDiv args
-            | OperationType.Remainder -> x.MakeBinary encCtx ctx.MkBVSRem args
-            | OperationType.Remainder_Un -> x.MakeBinary encCtx ctx.MkBVURem args
+            | OperationType.Subtract -> x.MakeBinary encCtx x.MkBVSub args
+            | OperationType.Divide -> x.MakeBinary encCtx x.MkBVSDiv args
+            | OperationType.Divide_Un -> x.MakeBinary encCtx x.MkBVUDiv args
+            | OperationType.Remainder -> x.MakeBinary encCtx x.MkBVSRem args
+            | OperationType.Remainder_Un -> x.MakeBinary encCtx x.MkBVURem args
             | OperationType.UnaryMinus -> x.MakeUnary encCtx ctx.MkBVNeg args
             | _ -> __unreachable__()
 
         member private x.ExtractOrExtend (expr : BitVecExpr) size =
             let exprSize = expr.SortSize
-            if exprSize > size then ctx.MkExtract(size - 1u, 0u, expr)
+            if exprSize = size then expr
+            elif exprSize > size then ctx.MkExtract(size - 1u, 0u, expr)
             else ctx.MkSignExt(size - exprSize, expr)
 
         member private x.ReverseBytes (expr : BitVecExpr) =
@@ -344,45 +443,67 @@ module internal Z3 =
             let bytes = List.init (size / 8) (fun byte -> ctx.MkExtract(uint ((byte + 1) * 8) - 1u, uint (byte * 8), expr))
             List.reduce (fun x y -> ctx.MkConcat(x, y)) bytes
 
+        member private x.ComputeSliceBounds assumptions cuts termSortSize =
+            assert(termSortSize % 8u = 0u && termSortSize > 0u)
+            let zero = ctx.MkBV(0, termSortSize)
+            let sizeExpr = ctx.MkBV(termSortSize / 8u, termSortSize)
+            let addBounds (startByte, endByte, pos) (assumptions, startExpr, sizeExpr, position) =
+                let assumptions = assumptions @ startByte.assumptions @ endByte.assumptions @ pos.assumptions
+                let startByte = x.ExtractOrExtend (startByte.expr :?> BitVecExpr) termSortSize
+                let endByte = x.ExtractOrExtend (endByte.expr :?> BitVecExpr) termSortSize
+                let pos = x.ExtractOrExtend (pos.expr :?> BitVecExpr) termSortSize
+                let startByte = x.MkBVSub(startByte, position)
+                let endByte = x.MkBVSub(endByte, position)
+                let left = x.Max startByte zero
+                let right = x.Min endByte sizeExpr
+                let sliceSize = x.MkBVSub(right, left)
+                let newLeft = x.MkBVAdd(startExpr, left)
+                let newRight = x.Min (x.MkBVAdd(newLeft, sliceSize)) sizeExpr
+                let newPos = x.Max pos zero
+                assumptions, newLeft, newRight, newPos
+            List.foldBack addBounds cuts (assumptions, zero, sizeExpr, zero)
+
         // TODO: make code better
         member private x.EncodeCombine encCtx slices typ =
             let res = ctx.MkNumeral(0, x.Type2Sort typ) :?> BitVecExpr
             let window = res.SortSize
             let windowExpr = ctx.MkNumeral(window, x.Type2Sort(Types.IndexType)) :?> BitVecExpr
-            let zero = ctx.MkNumeral(0, x.Type2Sort(Types.IndexType)) :?> BitVecExpr
             let addOneSlice (res, assumptions) slice =
-                let term, startByte, endByte, pos =
+                let term, cuts =
                     match slice.term with
-                    | Slice(term, startByte, endByte, pos) ->
-                        x.EncodeTerm encCtx term, x.EncodeTerm encCtx startByte, x.EncodeTerm encCtx endByte, x.EncodeTerm encCtx pos
-                    | _ -> internalfailf "encoding combine: expected slice as argument, but got %O" slice
-                let assumptions = assumptions @ term.assumptions @ startByte.assumptions @ endByte.assumptions @ pos.assumptions
-                let term = term.expr :?> BitVecExpr
-                let startByte = startByte.expr :?> BitVecExpr
-                let endByte = endByte.expr :?> BitVecExpr
-                let pos = pos.expr :?> BitVecExpr
-                let pos = ctx.MkBVMul(pos, ctx.MkBV(8, pos.SortSize))
-                let startBit = ctx.MkBVMul(startByte, ctx.MkBV(8, startByte.SortSize))
-                let endBit = ctx.MkBVMul(endByte, ctx.MkBV(8, endByte.SortSize))
-                let termSize = term.SortSize
-                let sizeExpr = ctx.MkBV(termSize, endBit.SortSize)
-                let left = x.MkITE(ctx.MkBVSGT(startBit, zero), startBit, zero) :?> BitVecExpr
-                let right = x.MkITE(ctx.MkBVSGT(sizeExpr, endBit), endBit, sizeExpr) :?> BitVecExpr
-                let size = ctx.MkBVSub(right, left)
-                let intersects = ctx.MkBVSGT(size, zero)
-                let term = x.ReverseBytes term
-                let left = x.ExtractOrExtend left term.SortSize
-                let term = ctx.MkBVLSHR(ctx.MkBVSHL(term, left), left)
-                let toShiftRight = x.ExtractOrExtend (ctx.MkBVSub(sizeExpr, right)) term.SortSize
-                let term = ctx.MkBVLSHR(term, toShiftRight)
-                let term = if termSize > window then ctx.MkExtract(window - 1u, 0u, term) else ctx.MkZeroExt(window - termSize, term)
-                let w = x.ExtractOrExtend windowExpr term.SortSize
-                let s = x.ExtractOrExtend sizeExpr term.SortSize
-                let pos = x.ExtractOrExtend pos term.SortSize
-                let toShiftRight = x.ExtractOrExtend toShiftRight term.SortSize
-                let shift = ctx.MkBVAdd(ctx.MkBVSub(w, ctx.MkBVSub(s, pos)), toShiftRight)
-                let part = ctx.MkBVSHL(term, shift)
-                let res = x.MkITE(intersects, ctx.MkBVOR(res, part), res) :?> BitVecExpr
+                    | Slice(term, cuts) ->
+                        let slices = List.map (fun (s, e, pos) -> x.EncodeTerm encCtx s, x.EncodeTerm encCtx e, x.EncodeTerm encCtx pos) cuts
+                        x.EncodeTerm encCtx term, slices
+                    | _ -> x.EncodeTerm encCtx slice, List.empty
+                let t = term.expr :?> BitVecExpr
+                let assumptions = assumptions @ term.assumptions
+                let termSize = t.SortSize
+                let sizeExpr = ctx.MkBV(termSize, termSize)
+                let assumptions, lByte, rByte, posByte = x.ComputeSliceBounds assumptions cuts termSize
+                let lByte = x.ExtractOrExtend lByte termSize
+                let rByte = x.ExtractOrExtend rByte termSize
+                let posByte = x.ExtractOrExtend posByte termSize
+                let lBit = x.MkBVMul(lByte, ctx.MkBV(8, termSize))
+                let rBit = x.MkBVMul(rByte, ctx.MkBV(8, termSize))
+                let posBit = x.MkBVMul(posByte, ctx.MkBV(8, termSize))
+                let sliceSize = x.MkBVSub(rBit, lBit)
+                let zero = ctx.MkBV(0, termSize)
+                let intersects = x.MkBVSGT(sliceSize, zero)
+                let term = x.ReverseBytes t
+                let left = x.ExtractOrExtend lBit termSize
+                let term = x.MkBVShl(term, left)
+                let cutRight = x.ExtractOrExtend (x.MkBVSub(sizeExpr, rBit)) termSize
+                let term = x.MkBVLShr(term, x.MkBVAdd(left, cutRight))
+                let term =
+                    if termSize > window then ctx.MkExtract(window - 1u, 0u, term)
+                    else ctx.MkZeroExt(window - termSize, term)
+                let changedTermSize = term.SortSize
+                let w = x.ExtractOrExtend windowExpr changedTermSize
+                let pos = x.ExtractOrExtend posBit changedTermSize
+                let sliceSize = x.ExtractOrExtend sliceSize changedTermSize
+                let shift = x.MkBVSub(w, x.MkBVAdd(pos, sliceSize))
+                let part = x.MkBVShl(term, shift)
+                let res = x.MkITE(intersects, x.MkBVOr(res, part), res) :?> BitVecExpr
                 res, assumptions
             let result, assumptions = List.fold addOneSlice (res, List.empty) slices
             {expr = x.ReverseBytes result; assumptions = assumptions}
@@ -466,9 +587,9 @@ module internal Z3 =
                 let bound = ctx.MkNumeral(encCtx.addressOrder.[y.elem], x.Type2Sort addressType) :?> BitVecExpr
                 let condition =
                     match y.sort with
-                    | endpointSort.OpenRight -> ctx.MkBVSLT(key :?> BitVecExpr, bound)
+                    | endpointSort.OpenRight -> x.MkBVSLT(key :?> BitVecExpr, bound)
                     | endpointSort.ClosedRight -> x.MkBVSLE(key :?> BitVecExpr, bound)
-                    | endpointSort.OpenLeft -> ctx.MkBVSGT(key :?> BitVecExpr, bound)
+                    | endpointSort.OpenLeft -> x.MkBVSGT(key :?> BitVecExpr, bound)
                     | endpointSort.ClosedLeft -> x.MkBVSGE(key :?> BitVecExpr, bound)
                     | _ -> __unreachable__()
                 x.MkAnd(acc, condition)
@@ -570,7 +691,7 @@ module internal Z3 =
             if typ = addressType then
                 // In case of symbolic address instantiation, adding assumption "inst < 0"
                 let zero = ctx.MkNumeral(0, inst.Sort) :?> BitVecExpr
-                let belowZero = ctx.MkBVSLE(inst :?> BitVecExpr, zero)
+                let belowZero = x.MkBVSLE(inst :?> BitVecExpr, zero)
                 belowZero |> List.singleton
             else List.empty
 
@@ -592,7 +713,7 @@ module internal Z3 =
             // TODO: use stringRepr for serialization of strings
             let expr = encodingResult.expr :?> BitVecExpr
             let assumptions = encodingResult.assumptions
-            let cond = ctx.MkBVSGT(expr, ctx.MkBV(32, expr.SortSize))
+            let cond = x.MkBVSGT(expr, ctx.MkBV(32, expr.SortSize))
             {expr = expr; assumptions = cond :: assumptions}
 
         member private x.ArrayReading encCtx specialize keyInRegion keysAreMatch encodeKey hasDefaultValue indices key mo typ source structFields name =
@@ -708,8 +829,8 @@ module internal Z3 =
                 let lowerIsZero = x.MkEq(lowerWord, ctx.MkBV(0, lowerWord.SortSize))
                 let exp = ctx.MkExtract(23u, 16u, expr)
                 let expSize = exp.SortSize
-                let leftBound = ctx.MkBVUGE(exp, ctx.MkBV(0, expSize))
-                let rightBound = ctx.MkBVULE(exp, ctx.MkBV(28, expSize))
+                let leftBound = x.MkBVUGE(exp, ctx.MkBV(0, expSize))
+                let rightBound = x.MkBVULE(exp, ctx.MkBV(28, expSize))
                 let expInBound = x.MkAnd(leftBound, rightBound)
                 let upper = ctx.MkExtract(30u, 24u, expr)
                 let upperIsZero = x.MkEq(upper, ctx.MkBV(0, upper.SortSize))
@@ -794,6 +915,9 @@ module internal Z3 =
                 assert(exprs.Length = 1)
                 let index = x.Decode typeof<int8> exprs.[0]
                 StackBufferIndex(key, index)
+            | BoxedSort typ ->
+                let address = x.DecodeConcreteHeapAddress exprs[0] |> ConcreteHeapAddress
+                BoxedLocation(address, typ)
 
         member private x.DecodeBv t (bv : BitVecNum) =
             match bv.SortSize with
@@ -856,8 +980,6 @@ module internal Z3 =
             let subst = Dictionary<ISymbolicConstantSource, term>()
             let stackEntries = Dictionary<stackKey, term ref>()
             let state = {Memory.EmptyState() with complete = true}
-            // TODO: some of evaluated constants are written to model: most of them contain stack reading
-            // TODO: maybe encode stack reading as reading from array?
             encodingCache.t2e |> Seq.iter (fun kvp ->
                 match kvp.Key with
                 | {term = Constant(_, StructFieldChain(fields, StackReading(key)), t)} as constant ->
@@ -897,7 +1019,7 @@ module internal Z3 =
             Memory.NewStackFrame state None (List.ofSeq frame)
 
             let defaultValues = Dictionary<regionSort, term ref>()
-            encodingCache.regionConstants |> Seq.iter (fun kvp ->
+            for kvp in encodingCache.regionConstants do
                 let region, fields = kvp.Key
                 let constant = kvp.Value
                 let arr = m.Eval(constant, false)
@@ -908,7 +1030,7 @@ module internal Z3 =
                     if arr.IsConstantArray then
                         assert(arr.Args.Length = 1)
                         let constantValue =
-                            if Types.IsValueType typeOfLocation then x.Decode typeOfLocation arr.Args.[0]
+                            if Types.IsValueType typeOfLocation then x.Decode typeOfLocation arr.Args[0]
                             else
                                 let addr = x.DecodeConcreteHeapAddress arr.Args[0] |> ConcreteHeapAddress
                                 HeapRef addr typeOfLocation
@@ -943,11 +1065,11 @@ module internal Z3 =
                             assert(states.Length = 1 && states[0] = state)
                         else internalfailf "Unexpected quantifier expression in model: %O" arr
                     else internalfailf "Unexpected array expression in model: %O" arr
-                parseArray arr)
-            defaultValues |> Seq.iter (fun kvp ->
+                parseArray arr
+            for kvp in defaultValues do
                 let region = kvp.Key
                 let constantValue = kvp.Value.Value
-                Memory.FillRegion state constantValue region)
+                Memory.FillRegion state constantValue region
 
             state.startingTime <- [encodingCache.lastSymbolicAddress - 1]
 

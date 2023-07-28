@@ -12,6 +12,7 @@ using NUnit.Framework.Interfaces;
 using NUnit.Framework.Internal;
 using NUnit.Framework.Internal.Builders;
 using NUnit.Framework.Internal.Commands;
+using VSharp.CSharpUtils;
 using VSharp.Interpreter.IL;
 using VSharp.Solver;
 using VSharp.TestRenderer;
@@ -86,26 +87,24 @@ namespace VSharp.Test
         private readonly uint _recThresholdForTest;
         private readonly int _timeout;
         private readonly int _solverTimeout;
-        private readonly bool _concolicMode;
         private readonly SearchStrategy _strat;
         private readonly CoverageZone _coverageZone;
         private readonly TestsCheckerMode _testsCheckerMode;
-        private readonly bool _guidedMode;
         private readonly bool _releaseBranches;
         private readonly bool _checkAttributes;
+        private readonly bool _hasExternMocking;
 
         public TestSvmAttribute(
             int expectedCoverage = -1,
-            uint recThresholdForTest = 0u,
+            uint recThresholdForTest = 1u,
             int timeout = -1,
             int solverTimeout = -1,
-            bool concolicMode = false,
-            bool guidedMode = true,
             bool releaseBranches = true,
             SearchStrategy strat = SearchStrategy.BFS,
             CoverageZone coverageZone = CoverageZone.Class,
             TestsCheckerMode testsCheckerMode = TestsCheckerMode.RenderAndRun,
-            bool checkAttributes = true)
+            bool checkAttributes = true,
+            bool hasExternMocking = false)
         {
             if (expectedCoverage < 0)
                 _expectedCoverage = null;
@@ -115,31 +114,28 @@ namespace VSharp.Test
             _recThresholdForTest = recThresholdForTest;
             _timeout = timeout;
             _solverTimeout = solverTimeout;
-            _concolicMode = concolicMode;
-            _guidedMode = guidedMode;
             _releaseBranches = releaseBranches;
             _strat = strat;
             _coverageZone = coverageZone;
             _testsCheckerMode = testsCheckerMode;
             _checkAttributes = checkAttributes;
+            _hasExternMocking = hasExternMocking;
         }
 
         public virtual TestCommand Wrap(TestCommand command)
         {
-            var execMode = _concolicMode ? executionMode.ConcolicMode : executionMode.SymbolicMode;
             return new TestSvmCommand(
                 command,
                 _expectedCoverage,
                 _recThresholdForTest,
                 _timeout,
                 _solverTimeout,
-                _guidedMode,
                 _releaseBranches,
-                execMode,
                 _strat,
                 _coverageZone,
                 _testsCheckerMode,
-                _checkAttributes
+                _checkAttributes,
+                _hasExternMocking
             );
         }
 
@@ -150,7 +146,6 @@ namespace VSharp.Test
             private readonly int _timeout;
             private readonly int _solverTimeout;
             private readonly bool _releaseBranches;
-            private readonly executionMode _executionMode;
             private readonly searchMode _searchStrat;
             private readonly coverageZone _coverageZone;
 
@@ -158,6 +153,7 @@ namespace VSharp.Test
             private readonly CoverageZone _baseCoverageZone;
             private readonly bool _renderTests;
             private readonly bool _checkAttributes;
+            private readonly bool _hasExternMocking;
 
             public TestSvmCommand(
                 TestCommand innerCommand,
@@ -165,13 +161,12 @@ namespace VSharp.Test
                 uint recThresholdForTest,
                 int timeout,
                 int solverTimeout,
-                bool guidedMode,
                 bool releaseBranches,
-                executionMode execMode,
                 SearchStrategy strat,
                 CoverageZone coverageZone,
                 TestsCheckerMode testsCheckerMode,
-                bool checkAttributes) : base(innerCommand)
+                bool checkAttributes,
+                bool hasExternMocking) : base(innerCommand)
             {
                 _baseCoverageZone = coverageZone;
                 _baseSearchStrat = TestContext.Parameters[SearchStrategyParameterName] == null ?
@@ -181,7 +176,6 @@ namespace VSharp.Test
                     expectedCoverage : int.Parse(TestContext.Parameters[ExpectedCoverageParameterName]);
 
                 _recThresholdForTest = recThresholdForTest;
-                _executionMode = execMode;
 
                 _timeout = TestContext.Parameters[TimeoutParameterName] == null ?
                     timeout : int.Parse(TestContext.Parameters[TimeoutParameterName]);
@@ -212,17 +206,19 @@ namespace VSharp.Test
                 };
 
                 _renderTests = testsCheckerMode == TestsCheckerMode.RenderAndRun;
-
-                if (guidedMode)
-                {
-                    _searchStrat = searchMode.NewGuidedMode(_searchStrat);
-                }
-
                 _checkAttributes = checkAttributes;
+
+                _hasExternMocking = hasExternMocking;
             }
 
             private TestResult Explore(TestExecutionContext context)
             {
+                if (_hasExternMocking && !ExternMocker.ExtMocksSupported)
+                {
+                    context.CurrentResult.SetResult(ResultState.Skipped);
+                    return context.CurrentResult;
+                }
+
                 IStatisticsReporter reporter = null;
 
                 var csvReportPath = TestContext.Parameters[CsvPathParameterName];
@@ -240,7 +236,6 @@ namespace VSharp.Test
                 var exploredMethodInfo = (MethodInfo) AssemblyManager.NormalizeMethod(originMethodInfo);
                 var stats = new TestStatistics(
                     exploredMethodInfo,
-                    _searchStrat.IsGuidedMode,
                     _releaseBranches,
                     _timeout,
                     _baseSearchStrat,
@@ -249,10 +244,9 @@ namespace VSharp.Test
 
                 try
                 {
-                    UnitTests unitTests = new UnitTests(Directory.GetCurrentDirectory());
+                    var unitTests = new UnitTests(Directory.GetCurrentDirectory());
                     _options = new SiliOptions(
                         explorationMode: explorationMode.NewTestCoverageMode(_coverageZone, _searchStrat),
-                        executionMode: _executionMode,
                         outputDirectory: unitTests.TestDirectory,
                         recThreshold: _recThresholdForTest,
                         timeout: _timeout,
@@ -285,7 +279,7 @@ namespace VSharp.Test
                     }
 
                     explorer.Statistics.PrintDebugStatistics(TestContext.Out);
-                    TestContext.Out.WriteLine("Test results written to {0}", unitTests.TestDirectory.FullName);
+                    TestContext.Out.WriteLine($"Test results written to {unitTests.TestDirectory.FullName}");
                     unitTests.WriteReport(explorer.Statistics.PrintDebugStatistics);
 
                     stats = stats with
@@ -298,13 +292,18 @@ namespace VSharp.Test
                     if (unitTests.UnitTestsCount != 0 || unitTests.ErrorsCount != 0)
                     {
                         var testsDir = unitTests.TestDirectory;
-                        if (_renderTests)
+                        // TODO: support rendering for extern mocks
+                        if (_renderTests && !_hasExternMocking)
                         {
                             var tests = testsDir.EnumerateFiles("*.vst");
                             TestContext.Out.WriteLine("Starting tests renderer...");
                             try
                             {
                                 Renderer.Render(tests, true, false, exploredMethodInfo.DeclaringType);
+                            }
+                            catch (UnexpectedExternCallException)
+                            {
+                                // TODO: support rendering for extern mocks
                             }
                             catch (Exception e)
                             {

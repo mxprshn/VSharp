@@ -64,7 +64,8 @@ module API =
         result
     let UnspecifiedErrorReporter() = ErrorReporter "Unspecified"
 
-    let MockMethod state method = MethodMocking.mockMethod state method
+    let MethodMockAndCall state method this args = MethodMocking.mockAndCall state method this args Default
+    let ExternMockAndCall state method this args = MethodMocking.mockAndCall state method this args Extern
 
     [<AutoOpen>]
     module public Terms =
@@ -75,7 +76,6 @@ module API =
         let Struct fields typ = Struct fields typ
         let Ref address = Ref address
         let Ptr baseAddress typ offset = Ptr baseAddress typ offset
-        let Slice term first termSize pos = Slice term first termSize pos
         let HeapRef address baseType = HeapRef address baseType
         let Union gvs = Union gvs
 
@@ -87,8 +87,15 @@ module API =
 
         let MakeBool b = makeBool b
         let MakeNumber n = makeNumber n
-        // NOTE: Ref, Ptr, and nonzero numbers
-        let MakeIntPtr (value : term) = value
+
+        // This function is used only for creating IntPtr structure
+        let MakeIntPtr (value : term) = makeIntPtr value
+
+        // This function is used only for creating UIntPtr structure
+        let MakeUIntPtr (value : term) = makeUIntPtr value
+
+        let NativeToPtr (value : term) = nativeToPointer value
+
         let AddressToBaseAndOffset address = Pointers.addressToBaseAndOffset address
         // NOTE: returns type of value
         let TypeOf term = typeOf term
@@ -125,6 +132,7 @@ module API =
         let (|ConcreteHeapAddress|_|) t = (|ConcreteHeapAddress|_|) t
 
         let (|Combined|_|) t = (|Combined|_|) t
+        let (|CombinedTerm|_|) t = (|CombinedTerm|_|) t
 
         let (|True|_|) t = (|True|_|) t
         let (|False|_|) t = (|False|_|) t
@@ -140,6 +148,8 @@ module API =
         let (|NullPtr|_|) = function
             | {term = Ptr(HeapLocation(addr, _), _, offset)} when addr = zeroAddress && offset = makeNumber 0 -> Some()
             | _ -> None
+
+        let (|DetachedPtr|_|) term = (|DetachedPtr|_|) term.term
 
         let (|StackReading|_|) src = Memory.(|StackReading|_|) src
         let (|HeapReading|_|) src = Memory.(|HeapReading|_|) src
@@ -174,8 +184,7 @@ module API =
 
         let rec HeapReferenceToBoxReference reference =
             match reference.term with
-            | HeapRef({term = ConcreteHeapAddress addr}, typ) -> Ref (BoxedLocation(addr, typ))
-            | HeapRef _ -> __insufficientInformation__ "Unable to unbox symbolic ref %O" reference
+            | HeapRef(address, typ) -> Ref (BoxedLocation(address, typ))
             | Union gvs -> gvs |> List.map (fun (g, v) -> (g, HeapReferenceToBoxReference v)) |> Merging.merge
             | _ -> internalfailf "Unboxing: expected heap reference, but got %O" reference
 
@@ -348,12 +357,13 @@ module API =
             | HeapRef(address, typ) when isSuitableField address typ |> not ->
                 // TODO: check this case with casting via "is"
                 Logger.trace "[WARNING] unsafe cast of term %O in safe context" reference
-                let offset = Reflection.getFieldOffset fieldId |> MakeNumber
+                let offset = Reflection.getFieldIdOffset fieldId |> MakeNumber
                 Ptr (HeapLocation(address, typ)) fieldId.typ offset
             | HeapRef(address, typ) when fieldId.declaringType.IsValueType ->
                 // TODO: Need to check mostConcreteTypeOfHeapRef using pathCondition?
                 assert(isSuitableField address typ)
-                ReferenceField state (HeapReferenceToBoxReference reference) fieldId
+                let ref = HeapReferenceToBoxReference reference
+                ReferenceField state ref fieldId
             | HeapRef(address, typ) ->
                 // TODO: Need to check mostConcreteTypeOfHeapRef using pathCondition?
                 assert(isSuitableField address typ)
@@ -362,7 +372,7 @@ module API =
                 assert fieldId.declaringType.IsValueType
                 StructField(address, fieldId) |> Ref
             | Ptr(baseAddress, _, offset) ->
-                let fieldOffset = Reflection.getFieldOffset fieldId |> makeNumber
+                let fieldOffset = Reflection.getFieldIdOffset fieldId |> makeNumber
                 Ptr baseAddress fieldId.typ (add offset fieldOffset)
             | Union gvs -> gvs |> List.map (fun (g, v) -> (g, ReferenceField state v fieldId)) |> Merging.merge
             | _ -> internalfailf "Referencing field: expected reference, but got %O" reference
@@ -381,8 +391,10 @@ module API =
             let doRead target =
                 match target.term with
                 | HeapRef _
+                | Ptr _
                 | Ref _ -> ReferenceField state target field |> Memory.read state (UnspecifiedErrorReporter())
                 | Struct _ -> Memory.readStruct target field
+                | Combined _ -> Memory.readFieldUnsafe target field
                 | _ -> internalfailf "Reading field of %O" term
             Merging.guardedApply doRead term
 
@@ -627,6 +639,8 @@ module API =
                 state.lowerBounds <- PersistentDict.update state.lowerBounds typ (MemoryRegion.empty TypeUtils.lengthType) (MemoryRegion.fillRegion value)
             | StackBufferSort key ->
                 state.stackBuffers <- PersistentDict.update state.stackBuffers key (MemoryRegion.empty typeof<int8>) (MemoryRegion.fillRegion value)
+            | BoxedSort typ ->
+                state.boxedLocations <- PersistentDict.update state.boxedLocations typ (MemoryRegion.empty typ) (MemoryRegion.fillRegion value)
 
         let ObjectToTerm (state : state) (o : obj) (typ : Type) = Memory.objToTerm state typ o
 

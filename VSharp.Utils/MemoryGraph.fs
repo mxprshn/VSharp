@@ -123,7 +123,8 @@ with
 [<Serializable>]
 type pointerRepr = {
     index : int
-    shift : int
+    shift : int64
+    sightType : int
 }
 
 [<CLIMutable>]
@@ -210,6 +211,31 @@ with
 [<XmlInclude(typeof<pointerRepr>)>]
 [<XmlInclude(typeof<arrayRepr>)>]
 [<XmlInclude(typeof<enumRepr>)>]
+[<XmlInclude(typeof<methodRepr>)>]
+type extMockRepr = {
+    name : string
+    baseMethod : methodRepr
+    methodImplementation : obj array
+}
+with
+    static member Encode name baseMethod results =
+        {
+            name = name
+            baseMethod = methodRepr.Encode baseMethod
+            methodImplementation = results
+        }
+
+    member x.Decode() =
+        let baseMethod = x.baseMethod.Decode()
+        ExtMocking.Type.Deserialize x.name baseMethod x.methodImplementation
+
+[<CLIMutable>]
+[<Serializable>]
+[<XmlInclude(typeof<structureRepr>)>]
+[<XmlInclude(typeof<referenceRepr>)>]
+[<XmlInclude(typeof<pointerRepr>)>]
+[<XmlInclude(typeof<arrayRepr>)>]
+[<XmlInclude(typeof<enumRepr>)>]
 [<XmlInclude(typeof<typeMockRepr>)>]
 [<XmlInclude(typeof<stringRepr>)>]
 type memoryRepr = {
@@ -282,6 +308,10 @@ type MemoryGraph(repr : memoryRepr, sequenceReprs : methodSequenceRepr array, mo
 
     let sourceTypes = List<Type>(repr.types |> Array.map (fun t -> t.Decode()))
     let compactRepresentations = Dictionary<obj, CompactArrayRepr>()
+    let boxedLocations = HashSet<physicalAddress>()
+
+    let intPtrIndex = Int32.MaxValue
+    let uintPtrIndex = Int32.MinValue
 
     let methodSequenceReprs = List(sequenceReprs)
     let methodSequenceObjectIndices = Dictionary<obj, int>()
@@ -326,6 +356,7 @@ type MemoryGraph(repr : memoryRepr, sequenceReprs : methodSequenceRepr array, mo
         | :? stringRepr as repr -> repr.Decode()
         | _ -> obj
 
+    let nullSourceIndex = -1
     let sourceObjects = List<obj>(repr.objects |> Array.map allocateDefault)
     let objReprs = List<obj>(repr.objects)
 
@@ -340,6 +371,14 @@ type MemoryGraph(repr : memoryRepr, sequenceReprs : methodSequenceRepr array, mo
                 ref : obj
             else sourceObj
         | :? pointerRepr -> __notImplemented__()
+        | :? pointerRepr as repr when repr.sightType = intPtrIndex ->
+            let shift = decodeValue repr.shift :?> int64
+            IntPtr(shift) :> obj
+        | :? pointerRepr as repr when repr.sightType = uintPtrIndex ->
+            let shift = decodeValue repr.shift :?> int64 |> uint64
+            UIntPtr(shift) :> obj
+        | :? pointerRepr as repr ->
+            internalfail $"decoding pointer is not implemented {repr}"
         | :? structureRepr as repr when repr.typ >= 0 ->
             // Case for structs or classes of .NET type
             if createMethodSequenceRefs && repr.methodSequenceRef <> null
@@ -411,6 +450,8 @@ type MemoryGraph(repr : memoryRepr, sequenceReprs : methodSequenceRepr array, mo
                 compactRepresentations.Add(arr, compactRepr)
 
     and decodeObject (repr : obj) (obj : obj) =
+        if obj :? ValueType then
+            boxedLocations.Add {object = obj} |> ignore
         match repr with
         | :? structureRepr as repr when repr.typ >= 0 ->
             // Case for structs or classes of .NET type
@@ -427,7 +468,8 @@ type MemoryGraph(repr : memoryRepr, sequenceReprs : methodSequenceRepr array, mo
             decodeMockedStructure repr obj
         | :? arrayRepr as repr ->
             decodeArray repr obj
-        | _ -> ()
+        | :? ValueType -> ()
+        | _ -> internalfail $"decodeObject: unexpected object {obj}"
 
     let decodeMethodSequence (sequenceRepr : methodSequenceRepr) =
         let decodeArgument (argRepr : obj) =
@@ -469,6 +511,8 @@ type MemoryGraph(repr : memoryRepr, sequenceReprs : methodSequenceRepr array, mo
     member x.DecodeValue (obj : obj) = decodeValue createMethodSequences obj
 
     member x.CompactRepresentations() = compactRepresentations
+
+    member x.BoxedLocations() = boxedLocations
 
     member x.MethodSequences() = invokableMethodSequences
 
@@ -546,12 +590,12 @@ type MemoryGraph(repr : memoryRepr, sequenceReprs : methodSequenceRepr array, mo
 
     member x.Encode (obj : obj) : obj =
         match obj with
-        | null -> null
-        | :? referenceRepr -> obj
-        | :? structureRepr -> obj
-        | :? arrayRepr -> obj
-        | :? pointerRepr -> obj
-        | :? enumRepr -> obj
+        | null
+        | :? referenceRepr
+        | :? structureRepr
+        | :? arrayRepr
+        | :? pointerRepr
+        | :? enumRepr
         | :? stringRepr -> obj
         | _ ->
             let t = obj.GetType()
@@ -578,6 +622,14 @@ type MemoryGraph(repr : memoryRepr, sequenceReprs : methodSequenceRepr array, mo
                     let reference : referenceRepr = {index = idx}
                     reference :> obj
 
+    member x.RepresentIntPtr (shift : int64) =
+        let repr : pointerRepr = {index = nullSourceIndex; shift = shift; sightType = intPtrIndex}
+        repr :> obj
+
+    member x.RepresentUIntPtr (shift : int64) =
+        let repr : pointerRepr = {index = nullSourceIndex; shift = shift; sightType = uintPtrIndex}
+        repr :> obj
+
     member x.RepresentStruct (typ : Type) (fields : obj array) (methodSequenceRef : obj) =
         let repr : structureRepr = {typ = x.RegisterType typ; fields = fields; methodSequenceRef = methodSequenceRef }
         repr :> obj
@@ -602,13 +654,17 @@ type MemoryGraph(repr : memoryRepr, sequenceReprs : methodSequenceRepr array, mo
         { index = index }
 
     member x.AddArray (typ : Type) (contents : obj array) (lengths : int array) (lowerBounds : int array) index =
-        let repr : arrayRepr = {typ = x.RegisterType typ; defaultValue = null; indices = null; values = contents; lengths = lengths; lowerBounds = lowerBounds }
+        let repr : arrayRepr = {typ = x.RegisterType typ; defaultValue = null; indices = null; values = contents; lengths = lengths; lowerBounds = lowerBounds}
         objReprs.[index] <- repr
         { index = index }
 
     member x.AddCompactArrayRepresentation (typ : Type) (defaultValue : obj) (indices : int array array) (values : obj array) (lengths : int array) (lowerBounds : int array) index =
-        let repr : arrayRepr = {typ = x.RegisterType typ; defaultValue = defaultValue; indices = indices; values = values; lengths = lengths; lowerBounds = lowerBounds }
+        let repr : arrayRepr = {typ = x.RegisterType typ; defaultValue = defaultValue; indices = indices; values = values; lengths = lengths; lowerBounds = lowerBounds}
         objReprs.[index] <- repr
+        { index = index }
+
+    member x.AddBoxed (content : obj) index =
+        objReprs[index] <- content
         { index = index }
 
     member x.AddMethodSequenceCall (method : IMethod) (this : obj) (args : obj array) (hasNonVoidResult : bool) =

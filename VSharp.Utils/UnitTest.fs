@@ -5,6 +5,7 @@ open System.Diagnostics
 open System.IO
 open System.Reflection
 open System.Xml.Serialization
+open FSharpx.Collections
 open VSharp
 
 [<CLIMutable>]
@@ -34,6 +35,7 @@ type testInfo = {
     typeMocks : typeMockRepr array
     methodSequences : methodSequenceRepr array
     extraAssemblyLoadDirs : string array
+    externMocks : extMockRepr array
 }
 with
     static member OfMethod(m : MethodBase) = {
@@ -55,6 +57,7 @@ with
         typeMocks = Array.empty
         methodSequences = Array.empty
         extraAssemblyLoadDirs = Array.empty
+        externMocks = Array.empty
     }
 
 type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorage, createCompactRepr : bool, createMethodSequences : bool) =
@@ -69,10 +72,11 @@ type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorag
     let errorMessage = info.errorMessage
     let expectedResult = memoryGraph.DecodeValue info.expectedResult
     let compactRepresentations = memoryGraph.CompactRepresentations()
+    let boxedLocations = memoryGraph.BoxedLocations()
     let hasMethodSequence = info.hasMethodSequence
-//    let classTypeParameters = info.classTypeParameters |> Array.map Serialization.decodeType
-//    let methodTypeParameters = info.methodTypeParameters |> Array.map Serialization.decodeType
     let mutable extraAssemblyLoadDirs : string list = [Directory.GetCurrentDirectory()]
+    let mutable patchId = 0
+    let mutable externMocks = info.externMocks |> ResizeArray
 
     new(m : MethodBase) =
         UnitTest(m, testInfo.OfMethod m, MockStorage(), false, false)
@@ -85,6 +89,7 @@ type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorag
             let p = t.GetProperty("thisArg")
             p.SetValue(info, memoryGraph.Encode this)
 
+    member x.HasExternMocks with get() = ResizeArray.isEmpty externMocks |> not
     member x.Args with get() = args
     member x.IsError
         with get() = isError
@@ -117,6 +122,8 @@ type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorag
 
     member x.CompactRepresentations with get() = compactRepresentations
 
+    member x.BoxedLocations with get() = boxedLocations
+
     member x.HasMethodSequence
         with get() = hasMethodSequence
         and set (e : bool) =
@@ -129,6 +136,23 @@ type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorag
         match m with
         | Some m -> Nullable(mockStorage.RegisterMockedType m)
         | None -> Nullable()
+
+    member x.GetPatchId with get() =
+        let name = $"patch_{patchId}"
+        patchId <- patchId + 1
+        name
+
+    member x.AddExternMock extMock =
+        externMocks.Add extMock
+
+    member x.ApplyExternMocks(testName: string) =
+        for externMock in externMocks do
+            let extMock = externMock.Decode()
+            ExtMocking.buildAndPatch testName memoryGraph.DecodeValue extMock
+
+    member x.ReverseExternMocks() =
+        if x.HasExternMocks then
+            ExtMocking.unPatch()
 
     // @concreteParameters and @mockedParameters should have equal lengths and be complementary:
     // if @concreteParameters[i] is null, then @mockedParameters[i] is non-null and vice versa
@@ -174,8 +198,12 @@ type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorag
             mockStorage.TypeMocks.ToArray()
             |> Array.map (fun m -> typeMockRepr.Encode m memoryGraph.Encode)
         typeMocksProperty.SetValue(info, typeMocks)
+        let extMocksProperty = t.GetProperty("externMocks")
+        extMocksProperty.SetValue(info, externMocks.ToArray())
+
         let methodSequencesProperty = t.GetProperty("methodSequences")
         methodSequencesProperty.SetValue(info, memoryGraph.SerializeMethodSequences())
+        
         let serializer = XmlSerializer t
         use stream = File.Create(destination)
         serializer.Serialize(stream, info)
@@ -192,7 +220,7 @@ type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorag
         try
             let mdle = Reflection.resolveModule ti.assemblyName ti.moduleFullyQualifiedName
             if mdle = null then
-                raise <| InvalidOperationException(sprintf "Could not resolve module %s!" ti.moduleFullyQualifiedName)
+                raise <| InvalidOperationException($"Could not resolve module {ti.moduleFullyQualifiedName}!")
             let mockStorage = MockStorage()
             mockStorage.Deserialize ti.typeMocks
             let decodeTypeParameter (concrete : typeRepr) (mockIndex : Nullable<int>) =

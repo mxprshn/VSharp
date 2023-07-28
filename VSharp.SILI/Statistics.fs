@@ -44,7 +44,8 @@ type statisticsDump =
 type public SILIStatistics() =
     let totalVisited = Dictionary<codeLocation, uint>()
     let visitedWithHistory = Dictionary<codeLocation, HashSet<codeLocation>>()
-    let emittedErrors = HashSet<codeLocation * string>()
+    let emittedErrors = HashSet<ipStack * string>()
+    let emittedExceptions = HashSet<string * string>()
     let pcsWithoutSequences = HashSet<string>()
 
     let mutable isVisitedBlocksNotCoveredByTestsRelevant = true
@@ -158,7 +159,7 @@ type public SILIStatistics() =
             writer.WriteLine("{0} branch(es) with insufficient input information!", iies.Count)
             statisticsDump.iies |> List.iter (fun iie -> writer.WriteLine iie.Message)
 
-    member x.TrackStepForward (s : cilState) =
+    member x.TrackStepForward (s : cilState) ip =
         stepsCount <- stepsCount + 1u
         Logger.traceWithTag Logger.stateTraceTag $"{stepsCount} FORWARD: {s.id}"
         let setCoveredIfNeed (currentLoc : codeLocation) =
@@ -166,7 +167,7 @@ type public SILIStatistics() =
             | Some bb when currentLoc.offset = bb.FinalOffset ->
                 addLocationToHistory s currentLoc
             | _ -> ()
-        let currentLoc = ip2codeLocation (currentIp s)
+        let currentLoc = ip2codeLocation ip
         match currentLoc with
         | Some currentLoc when isHeadOfBasicBlock currentLoc ->
             let mutable totalRef = ref 0u
@@ -219,21 +220,22 @@ type public SILIStatistics() =
             coveredBlocks.Value.Contains blockStart.offset
         else false
 
-    member x.GetApproximateCoverage (methods : Method seq) =
-        let getCoveredBlocksCount (m : Method) =
-            let mutable coveredBlocks = ref null
-            if blocksCoveredByTests.TryGetValue(m, coveredBlocks) then
-                coveredBlocks.Value.Count
+    member x.GetCurrentCoverage (methods : Method seq) =
+        let getCoveredInstructionsCount (m : Method) =
+            let mutable coveredBlocksOffsets = ref null
+            if blocksCoveredByTests.TryGetValue(m, coveredBlocksOffsets) then
+                let cfg = m.ForceCFG
+                coveredBlocksOffsets.Value |> Seq.sumBy (fun o -> (cfg.ResolveBasicBlock o).BlockSize)
             else 0
         let methodsInZone = methods |> Seq.filter (fun m -> m.InCoverageZone)
-        let totalBlocksCount = methodsInZone |> Seq.sumBy (fun m -> m.BasicBlocksCount)
-        let coveredBlocksCount = methodsInZone |> Seq.sumBy getCoveredBlocksCount
-        if totalBlocksCount <> 0 then
-            uint <| floor (double coveredBlocksCount / double totalBlocksCount * 100.0)
+        let totalInstructionsCount = methodsInZone |> Seq.sumBy (fun m -> m.ForceCFG.MethodSize)
+        let coveredInstructionsCount = methodsInZone |> Seq.sumBy getCoveredInstructionsCount
+        if totalInstructionsCount <> 0 then
+            uint <| floor (double coveredInstructionsCount / double totalInstructionsCount * 100.0)
         else 0u
 
-    member x.GetApproximateCoverage (method : Method) =
-        x.GetApproximateCoverage(Seq.singleton method)
+    member x.GetCurrentCoverage (method : Method) =
+        x.GetCurrentCoverage(Seq.singleton method)
 
     member x.OnBranchesReleased() =
         branchesReleased <- true
@@ -254,8 +256,10 @@ type public SILIStatistics() =
 
         visitedBlocksNotCoveredByTests.Remove s |> ignore
 
-    member x.EmitError (s : cilState) (errorMessage : string) =
-        emittedErrors.Add(s.currentLoc, errorMessage)
+    member x.IsNewError (s : cilState) (errorMessage : string) =
+        match s.state.exceptionsRegister with
+        | Unhandled(_, _, stackTrace) -> emittedExceptions.Add(stackTrace, errorMessage)
+        | _ -> emittedErrors.Add(s.ipStack, errorMessage)
 
     member x.TrackStepBackward (pob : pob) (cilState : cilState) =
         // TODO

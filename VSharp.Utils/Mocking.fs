@@ -66,7 +66,8 @@ module Mocking =
                     if interfaceConstraints.Length > 0 then
                         builder.SetInterfaceConstraints interfaceConstraints)
                 let rec convertType (typ : Type) =
-                    if typ.IsGenericMethodParameter then genericsBuilder.[Array.IndexOf(baseGenericArgs, typ)] :> Type
+                    if typ.IsGenericMethodParameter then
+                        genericsBuilder[Array.IndexOf(baseGenericArgs, typ)] :> Type
                     elif typ.IsGenericType then
                         let args = typ.GetGenericArguments()
                         let args' = args |> Array.map convertType
@@ -169,9 +170,10 @@ module Mocking =
             if t.IsValueType || t.IsArray || t.IsPointer || t.IsByRef then
                 raise (ArgumentException("Mock supertype should be class or interface!"))
             if t.IsInterface then
-                x.AddInterfaceMethods t
-                interfaces.RemoveAll(fun u -> t.IsAssignableTo u) |> ignore
-                interfaces.Add t
+                if not (interfaces.Exists (fun u -> u.IsAssignableTo t)) then
+                    x.AddInterfaceMethods t
+                    interfaces.RemoveAll(fun u -> t.IsAssignableTo u) |> ignore
+                    interfaces.Add t
             elif baseClass = null then
                 baseClass <- t
                 x.AddClassMethods t
@@ -190,6 +192,9 @@ module Mocking =
                 let methodMock = Method(m, returnValues.Length)
                 methodMock.SetClauses returnValues
                 calledMethods.Add m
+                let methodType = m.ReflectedType
+                if methodType.IsInterface && not (interfaces.Contains methodType) then
+                    x.AddSuperType methodType
                 methodMocksCache[m] <- methodMock
 
         member x.Id = name
@@ -203,7 +208,7 @@ module Mocking =
         member x.Interfaces
             with get() = interfaces :> seq<_>
             and private set (types : System.Type seq) =
-                assert(ResizeArray.isEmpty interfaces)
+                assert(interfaces.Count = 0)
                 interfaces.AddRange types
 
         member x.MethodMocks
@@ -229,7 +234,8 @@ module Mocking =
                     let body = nonDefaultCtor.GetILGenerator()
                     body.Emit(OpCodes.Ret)
 
-            interfaces |> ResizeArray.iter typeBuilder.AddInterfaceImplementation
+            for i in interfaces do
+                typeBuilder.AddInterfaceImplementation i
 
             methodMocksCache.Values |> Seq.iter (fun methodMock -> methodMock.Build typeBuilder)
             typeBuilder.CreateType()

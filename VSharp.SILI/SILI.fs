@@ -3,12 +3,10 @@ namespace VSharp.Interpreter.IL
 open System
 open System.Diagnostics
 open System.Reflection
-open System.Collections.Generic
 open System.Threading.Tasks
 open FSharpx.Collections
 
 open VSharp
-open VSharp.Concolic
 open VSharp.Core
 open CilStateOperations
 open VSharp.Interpreter.IL
@@ -42,13 +40,8 @@ type public SILI(options : SiliOptions) =
 
     let statistics = new SILIStatistics()
 
-    let infty = UInt32.MaxValue
     let emptyState = Memory.EmptyState()
-    let isConcolicMode =
-        match options.executionMode with
-        | ConcolicMode -> true
-        | SymbolicMode -> false
-    let interpreter = ILInterpreter(isConcolicMode)
+    let interpreter = ILInterpreter()
 
     let methodSequenceExplorer : IMethodSequenceForwardExplorer = MethodSequenceForwardExplorer(interpreter)
     let methodSequenceSearcher : IMethodSequenceSearcher = MethodSequenceSearcher(options.maxMethodSequenceLength, fun s -> MethodSequenceBackwardExplorer s)
@@ -63,10 +56,8 @@ type public SILI(options : SiliOptions) =
 
     let mutable isCoverageAchieved : unit -> bool = always false
 
-    let mutable concolicMachines : Dictionary<cilState, ClientMachine> = Dictionary<cilState, ClientMachine>()
-
     let statesWaitingForSequence = Dictionary<cilState, (unit -> unit)>()
-
+    
     let () =
         if options.visualize then
             DotVisualizer options.outputDirectory :> IVisualizer |> Application.setVisualizer
@@ -88,25 +79,24 @@ type public SILI(options : SiliOptions) =
         | _ -> false
 
     let rec mkForwardSearcher = function
-        | BFSMode -> BFSSearcher(infty) :> IForwardSearcher
-        | DFSMode -> DFSSearcher(infty) :> IForwardSearcher
-        | ShortestDistanceBasedMode -> ShortestDistanceBasedSearcher(infty, statistics) :> IForwardSearcher
-        | RandomShortestDistanceBasedMode -> RandomShortestDistanceBasedSearcher(infty, statistics) :> IForwardSearcher
-        | ContributedCoverageMode -> DFSSortedByContributedCoverageSearcher(infty, statistics) :> IForwardSearcher
+        | BFSMode -> BFSSearcher() :> IForwardSearcher
+        | DFSMode -> DFSSearcher() :> IForwardSearcher
+        | ShortestDistanceBasedMode -> ShortestDistanceBasedSearcher statistics :> IForwardSearcher
+        | RandomShortestDistanceBasedMode -> RandomShortestDistanceBasedSearcher statistics :> IForwardSearcher
+        | ContributedCoverageMode -> DFSSortedByContributedCoverageSearcher statistics :> IForwardSearcher
         | FairMode baseMode ->
             FairSearcher((fun _ -> mkForwardSearcher baseMode), uint branchReleaseTimeout, statistics) :> IForwardSearcher
         | InterleavedMode(base1, stepCount1, base2, stepCount2) ->
             InterleavedSearcher([mkForwardSearcher base1, stepCount1; mkForwardSearcher base2, stepCount2]) :> IForwardSearcher
-        | GuidedMode baseMode ->
-            let baseSearcher = mkForwardSearcher baseMode
-            GuidedSearcher(infty, options.recThreshold, baseSearcher, StatisticsTargetCalculator(statistics)) :> IForwardSearcher
-        | searchMode.ConcolicMode baseMode -> ConcolicSearcher(mkForwardSearcher baseMode) :> IForwardSearcher
 
     let mutable searcher : IBidirectionalSearcher =
         match options.explorationMode with
         | TestCoverageMode(_, searchMode) ->
-            let baseSearcher = mkForwardSearcher searchMode
-            let baseSearcher = if isConcolicMode then ConcolicSearcher(baseSearcher) :> IForwardSearcher else baseSearcher
+            let baseSearcher =
+                if options.recThreshold > 0u then
+                    GuidedSearcher(mkForwardSearcher searchMode, RecursionBasedTargetManager(statistics, options.recThreshold)) :> IForwardSearcher
+                else
+                    mkForwardSearcher searchMode
             BidirectionalSearcher(baseSearcher, BackwardSearcher(), DummyTargetedSearcher.DummyTargetedSearcher()) :> IBidirectionalSearcher
         | StackTraceReproductionMode _ -> __notImplemented__()
 
@@ -115,8 +105,7 @@ type public SILI(options : SiliOptions) =
             branchesReleased <- true
             statistics.OnBranchesReleased()
             ReleaseBranches()
-            let dfsSearcher = DFSSortedByContributedCoverageSearcher(infty, statistics) :> IForwardSearcher
-            let dfsSearcher = if isConcolicMode then ConcolicSearcher(dfsSearcher) :> IForwardSearcher else dfsSearcher
+            let dfsSearcher = DFSSortedByContributedCoverageSearcher statistics :> IForwardSearcher
             let bidirectionalSearcher = OnlyForwardSearcher(dfsSearcher)
             dfsSearcher.Init <| searcher.States()
             searcher <- bidirectionalSearcher
@@ -135,23 +124,20 @@ type public SILI(options : SiliOptions) =
 
     let reportState reporter isError cilState message =
         try
-            searcher.Remove cilState
-            // TODO: EmitError can discard interesting errors
-            if cilState.history |> Seq.exists (not << statistics.IsBasicBlockCoveredByTest) && (not isError || statistics.EmitError cilState message)
-            then
-                let hasException =
-                    match cilState.state.exceptionsRegister with
-                    | Unhandled _ -> true
-                    | _ -> false
+            let isNewHistory() =
+                let methodHistory = Set.filter (fun h -> h.method.InCoverageZone) cilState.history
+                Set.exists (not << statistics.IsBasicBlockCoveredByTest) methodHistory
+            let suitableHistory = Set.isEmpty cilState.history || isNewHistory()
+            if suitableHistory && not isError || isError && statistics.IsNewError cilState message then
                 let callStackSize = Memory.CallStackSize cilState.state
-                let methodHasByRefParameter (m : Method) = m.Parameters |> Seq.exists (fun pi -> pi.ParameterType.IsByRef)
+                let methodHasByRefParameter (m : Method) =
+                    m.Parameters |> Array.exists (fun pi -> pi.ParameterType.IsByRef)
                 let entryMethod = entryMethodOf cilState
-                if isError && not hasException
-                    then
-                        if entryMethod.DeclaringType.IsValueType || methodHasByRefParameter entryMethod
-                        then Memory.ForcePopFrames (callStackSize - 2) cilState.state
-                        else Memory.ForcePopFrames (callStackSize - 1) cilState.state
-                    // TODO: we can update statistics or not according to settings
+                let hasException = isUnhandledError cilState
+                if isError && not hasException then
+                    if entryMethod.DeclaringType.IsValueType || methodHasByRefParameter entryMethod then
+                        Memory.ForcePopFrames (callStackSize - 2) cilState.state
+                    else Memory.ForcePopFrames (callStackSize - 1) cilState.state
                 statistics.TrackFinished cilState
                 let generateTest() =
                     match TestGenerator.state2test isError entryMethod cilState message with
@@ -168,26 +154,25 @@ type public SILI(options : SiliOptions) =
                     printSequence cilState
                     generateTest()
             else
-                methodSequenceSearcher.RemoveTarget cilState |> ignore
+                        methodSequenceSearcher.RemoveTarget cilState |> ignore
         with :? InsufficientInformationException as e ->
             cilState.iie <- Some e
             reportStateIncomplete cilState
 
     let wrapOnTest (action : Action<UnitTest>) (state : cilState) =
-        Logger.info "Result of method %s is %O" (entryMethodOf state).FullName state.Result
+        Logger.info $"Result of method {(entryMethodOf state).FullName} is {state.Result}"
         Application.terminateState state
         reportState action.Invoke false state null
 
     let wrapOnError (action : Action<UnitTest>) (state : cilState) errorMessage =
         if not <| String.IsNullOrWhiteSpace errorMessage then
-            Logger.info "Error in %s: %s" (entryMethodOf state).FullName errorMessage
+            Logger.info $"Error in {(entryMethodOf state).FullName}: {errorMessage}"
         Application.terminateState state
         reportState action.Invoke true state errorMessage
 
     let wrapOnStateIIE (action : Action<InsufficientInformationException>) (state : cilState) =
         statistics.IncompleteStates.Add(state)
         Application.terminateState state
-        searcher.Remove state
         action.Invoke state.iie.Value
 
     let wrapOnIIE (action : Action<InsufficientInformationException>) (iie: InsufficientInformationException) =
@@ -202,7 +187,6 @@ type public SILI(options : SiliOptions) =
         | _ ->
             statistics.InternalFails.Add(e)
             Application.terminateState state
-            searcher.Remove state
             action.Invoke(entryMethodOf state, e)
 
     let wrapOnInternalFail (action : Action<Method, Exception>) (method : Method) (e : Exception) =
@@ -331,9 +315,7 @@ type public SILI(options : SiliOptions) =
             let [cilState] = cilStates
             if isMethodSequenceGenerationEnabled then
                 methodSequenceSearcher.AddTarget None cilState |> ignore
-            match options.executionMode with
-            | ConcolicMode -> List.singleton cilState
-            | SymbolicMode -> interpreter.InitializeStatics cilState method.DeclaringType List.singleton
+            interpreter.InitializeStatics cilState method.DeclaringType List.singleton
         with
         | e ->
             reportInternalFail method e
@@ -380,9 +362,12 @@ type public SILI(options : SiliOptions) =
     member private x.Forward (s : cilState) =
         makeMethodSequenceSearchStepsIfNeeded()
         let loc = s.currentLoc
+        let ip = currentIp s
         // TODO: update pobs when visiting new methods; use coverageZone
-        statistics.TrackStepForward s
         let goodStates, iieStates, errors = interpreter.ExecuteOneInstruction s
+        for s in goodStates @ iieStates @ errors do
+            if hasRuntimeException s |> not then
+                statistics.TrackStepForward s ip
         let goodStates, toReportFinished = goodStates |> List.partition (fun s -> isExecutable s || isIsolated s)
         toReportFinished |> List.iter reportFinished
         let errors, toReportExceptions = errors |> List.partition (fun s -> isIsolated s || not <| stoppedByException s)
@@ -391,28 +376,25 @@ type public SILI(options : SiliOptions) =
         userExceptions |> List.iter reportFinished
         let iieStates, toReportIIE = iieStates |> List.partition isIsolated
         toReportIIE |> List.iter reportStateIncomplete
+        let mutable sIsStopped = false
         let newStates =
-            match goodStates with
-            | s'::goodStates when LanguagePrimitives.PhysicalEquality s s' -> goodStates @ iieStates @ errors
+            match goodStates, iieStates, errors with
+            | s'::goodStates, _, _ when LanguagePrimitives.PhysicalEquality s s' ->
+                goodStates @ iieStates @ errors
+            | _, s'::iieStates, _ when LanguagePrimitives.PhysicalEquality s s' ->
+                goodStates @ iieStates @ errors
+            | _, _, s'::errors when LanguagePrimitives.PhysicalEquality s s' ->
+                goodStates @ iieStates @ errors
             | _ ->
-                match iieStates with
-                | s'::iieStates when LanguagePrimitives.PhysicalEquality s s' -> goodStates @ iieStates @ errors
-                | _ ->
-                    match errors with
-                    | s'::errors when LanguagePrimitives.PhysicalEquality s s' -> goodStates @ iieStates @ errors
-                    | _ -> goodStates @ iieStates @ errors
-        let concolicMachine : ClientMachine ref = ref null
-        if concolicMachines.TryGetValue(s, concolicMachine) then
-            let machine = concolicMachine.Value
-            let cilState' = machine.StepDone (s::newStates)
-            if not <| LanguagePrimitives.PhysicalEquality s cilState' then
-                concolicMachines.Remove(s) |> ignore
-                concolicMachines.Add(cilState', machine)
+                sIsStopped <- true
+                goodStates @ iieStates @ errors
         Application.moveState loc s (Seq.cast<_> newStates)
         statistics.TrackFork s newStates
         if isMethodSequenceGenerationEnabled && not <| List.isEmpty newStates then
             (s :: newStates) |> Seq.iter (methodSequenceSearcher.AddTarget (Some s) >> ignore)
         searcher.UpdateStates s newStates
+        if sIsStopped then
+            searcher.Remove s
 
     member private x.Backward p' s' =
         assert(currentLoc s' = p'.loc)
@@ -425,7 +407,7 @@ type public SILI(options : SiliOptions) =
             | true ->
                 statistics.TrackStepBackward p' s'
                 let p = {loc = startingLoc s'; lvl = lvl; pc = pc}
-                Logger.trace "Backward:\nWas: %O\nNow: %O\n\n" p' p
+                Logger.trace $"Backward:\nWas: {p'}\nNow: {p}\n\n"
                 Application.addGoal p.loc
                 searcher.UpdatePobs p' p
             | false ->
@@ -463,21 +445,8 @@ type public SILI(options : SiliOptions) =
         mainPobs |> Seq.map (fun pob -> pob.loc) |> Seq.toArray |> Application.addGoals
         searcher.Init initialStates mainPobs
         initialStates |> Seq.filter isIIEState |> Seq.iter reportStateIncomplete
-        match options.executionMode with
-        | ConcolicMode ->
-            initialStates |> List.iter (fun initialState ->
-                let machine = ClientMachine(entryMethodOf initialState, (fun _ -> ()), initialState)
-                if not <| machine.Spawn() then
-                    internalfail "Unable to spawn concolic machine!"
-                concolicMachines.Add(initialState, machine))
-            let machine =
-                if concolicMachines.Count = 1 then Seq.head concolicMachines.Values
-                else __notImplemented__()
-            while machine.State.suspended && machine.ExecCommand() do
-                x.BidirectionalSymbolicExecution()
-        | SymbolicMode ->
-            x.BidirectionalSymbolicExecution()
-            x.FindRemainingMethodSequences()
+        x.BidirectionalSymbolicExecution()
+        x.FindRemainingMethodSequences()
         searcher.Statuses() |> Seq.iter (fun (pob, status) ->
             match status with
             | pobStatus.Unknown ->
@@ -502,7 +471,7 @@ type public SILI(options : SiliOptions) =
             Application.setCoverageZone (inCoverageZone coverageZone entryMethods)
             (*if options.stopOnCoverageAchieved > 0 then
                 let checkCoverage() =
-                    let cov = statistics.GetApproximateCoverage entryMethods
+                    let cov = statistics.GetCurrentCoverage entryMethods
                     cov >= uint options.stopOnCoverageAchieved
                 isCoverageAchieved <- checkCoverage*)
         | StackTraceReproductionMode _ -> __notImplemented__()

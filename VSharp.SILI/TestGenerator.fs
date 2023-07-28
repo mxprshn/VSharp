@@ -64,13 +64,18 @@ module TestGenerator =
                             Array.init rank (fun i -> ArrayLength(cha, MakeNumber i, arrayType) |> eval |> unbox),
                             Array.init rank (fun i -> ArrayLowerBound(cha, MakeNumber i, arrayType) |> eval |> unbox)
                         | SymbolicDimension -> __notImplemented__()
-                    let length = Array.reduce ( * ) lengths
+                    let length = Array.reduce (*) lengths
                     // TODO: normalize model (for example, try to minimize lengths of generated arrays)
                     if maxBufferSize > 0 && length > maxBufferSize then
                         raise <| InsufficientInformationException "Test generation for too large buffers disabled for now"
                     let repr = encodeArr test arrayType addr typ lengths lowerBounds index
                     repr :> obj
-                | _ when typ.IsValueType -> BoxedLocation(addr, typ) |> eval
+                | _ when typ.IsValueType ->
+                    let index = memoryGraph.ReserveRepresentation()
+                    indices.Add(addr, index)
+                    let content = BoxedLocation(ConcreteHeapAddress addr, typ) |> eval
+                    let repr = memoryGraph.AddBoxed content index
+                    repr :> obj
                 | _ when typ = typeof<string> ->
                     let length : int = ClassField(cha, Reflection.stringLengthField) |> eval |> unbox
                     let contents : char array = Array.init length (fun i -> ArrayIndex(cha, [MakeNumber i], (typeof<char>, 1, true)) |> eval |> unbox)
@@ -150,16 +155,24 @@ module TestGenerator =
             test.MemoryGraph.AddCompactArrayRepresentation typ defaultValue indices values lengths lowerBounds index
 
     let rec private term2obj (model : model) state (cache : testGeneratorCache) (test : UnitTest) (methodSequenceObjRef : obj) = function
+        let term2obj = term2obj model state indices mockCache implementations test
+        match term with
         | {term = Concrete(_, TypeUtils.AddressType)} -> __unreachable__()
+        | {term = Concrete(v, t)} when t = typeof<IntPtr> ->
+            test.MemoryGraph.RepresentIntPtr (int64 (v :?> IntPtr))
+        | {term = Concrete(v, t)} when t = typeof<UIntPtr> ->
+            test.MemoryGraph.RepresentUIntPtr (int64 (v :?> UIntPtr))
         | {term = Concrete(v, t)} when t.IsEnum -> test.MemoryGraph.RepresentEnum v
         | {term = Concrete(v, _)} -> v
         | {term = Nop} -> null
         | {term = Constant _ } as c -> model.Eval c |> term2obj model state cache test methodSequenceObjRef
         | {term = Struct(fields, t)} when Types.IsNullable t ->
             let valueField, hasValueField = Reflection.fieldsOfNullable t
-            let hasValue : bool = fields.[hasValueField] |> term2obj model state cache test null |> unbox
+            let hasValue : bool = fields[hasValueField] |> term2obj model state cache test null |> unbox
+                fields[valueField] |> term2obj model state cache test null
+            let hasValue : bool = fields[hasValueField] |> term2obj model state cache test null |> unbox
             if hasValue then
-                fields.[valueField] |> term2obj model state cache test null
+                fields[valueField] |> term2obj model state cache test null
             else null
         | {term = Struct(fields, t)} as term ->
             let methodSequenceObjRef =
@@ -178,6 +191,7 @@ module TestGenerator =
             test.MemoryGraph.RepresentStruct t fieldReprs methodSequenceObjRef
         | NullRef _
         | NullPtr -> null
+        | DetachedPtr offset -> internalfail $"term2obj: got detached pointer with offset {offset}"
         | {term = HeapRef({term = ConcreteHeapAddress(addr)}, _)} when VectorTime.less addr state.startingTime ->
             match model with
             | StateModel(modelState, _) ->
@@ -199,7 +213,7 @@ module TestGenerator =
             let typ = state.allocatedTypes[addr]
             let encodeMock = encodeTypeMock model state cache test
             obj2test eval arr2Obj cache encodeMock test addr typ methodSequenceObjRef
-        | Combined(terms, t) ->
+        | CombinedTerm(terms, t) ->
             let slices = List.map model.Eval terms
             ReinterpretConcretes slices t
         | term -> internalfailf "creating object from term: unexpected term %O" term
@@ -218,10 +232,16 @@ module TestGenerator =
                     let values = methodMock.Value
                     let methodType = method.ReflectedType
                     let mockedBaseInterface() =
-                        t.IsInterface && Seq.contains methodType (TypeUtils.getBaseInterfaces t)
+                        methodType.IsInterface && Seq.contains methodType (TypeUtils.getBaseInterfaces t)
                     if methodType = t || mockedBaseInterface() then
                         freshMock.AddMethod(method, Array.map eval values)
             freshMock
+
+    let encodeExternMock (model : model) state indices mockCache implementations test (methodMock : IMethodMock) =
+        let eval = model.Eval >> term2obj model state indices mockCache implementations test
+        let clauses = methodMock.GetImplementationClauses() |> Array.map eval
+        let extMock = extMockRepr.Encode test.GetPatchId methodMock.BaseMethod clauses
+        test.AddExternMock extMock
 
     let encodeMethodSequence (model : model) state cache modelState (sequence : methodSequence) test =
         let encodeArg (methodSequenceArgument : methodSequenceArgument) : obj =
@@ -295,8 +315,12 @@ module TestGenerator =
 
                 for entry in state.methodMocks do
                     let mock = entry.Value
-                    let values = mock.GetImplementationClauses()
-                    cache.implementations.Add(mock.BaseMethod, values)
+                    match mock.MockingType with
+                    | Default ->
+                        let values = mock.GetImplementationClauses()
+                        cache.implementations.Add(mock.BaseMethod, values)
+                    | Extern ->
+                        encodeExternMock model state indices mockCache implementations test mock
 
                 let concreteClassParams = Array.zeroCreate classParams.Length
                 let mockedClassParams = Array.zeroCreate classParams.Length
@@ -341,7 +365,7 @@ module TestGenerator =
 
                 let hasException, message =
                     match state.exceptionsRegister with
-                    | Unhandled(e, _) ->
+                    | Unhandled(e, _, _) ->
                         let t = MostConcreteTypeOfHeapRef state e
                         test.Exception <- t
                         let message =

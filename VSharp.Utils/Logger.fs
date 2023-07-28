@@ -27,6 +27,7 @@ module Logger =
     let public isTagEnabled tag = tagFilter tag
 
     let LevelToString = function
+        | 0 -> "Quiet"
         | 1 -> "Critical"
         | 2 -> "Error"
         | 3 -> "Warning"
@@ -42,8 +43,17 @@ module Logger =
         currentTextWriter.WriteLine(builder.ToString())
         currentTextWriter.Flush()
 
+    let public writeLine (message : string) =
+        currentTextWriter.WriteLine(message)
+        currentTextWriter.Flush()
+
     let public printLogString vLevel (message : string) =
-        writeLineString vLevel "" message
+        if currentLogLevel >= vLevel then
+            writeLineString vLevel "" message
+
+    let public printLogLazyString vLevel (computeMessage : Func<string>) =
+        if currentLogLevel >= vLevel then
+            computeMessage.Invoke() |> writeLineString vLevel ""
 
     let public printLogWithTag tag vLevel format =
         Printf.ksprintf (fun message -> if currentLogLevel >= vLevel && tagFilter tag then writeLineString vLevel tag message) format

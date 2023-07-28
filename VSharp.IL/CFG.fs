@@ -66,8 +66,10 @@ type BasicBlock (method: MethodWithBody, startOffset: offset) as this =
 
     member private this.GetInstructions() =
         let parsedInstructions = method.ParsedInstructions
-        let mutable instr = parsedInstructions |> Array.find (fun instr -> Offset.from (int instr.offset) = this.StartOffset)
-        let endInstr = parsedInstructions |> Array.find (fun instr -> Offset.from (int instr.offset) = this.FinalOffset)
+        let mutable instr = parsedInstructions[this.StartOffset]
+        assert(Offset.from (int instr.offset) = this.StartOffset)
+        let endInstr = parsedInstructions[this.FinalOffset]
+        assert(Offset.from (int endInstr.offset) = this.FinalOffset)
         let mutable notEnd = true
         seq {
             while notEnd do
@@ -130,6 +132,13 @@ and CfgInfo internal (method : MethodWithBody) =
                     found <- true
                     index <- currentIndex
                 | _ -> currentIndex <- currentIndex - 1
+
+            found <- false
+            let instructions = method.ParsedInstructions
+            while not found do
+                if instructions.ContainsKey (Offset.from index) then
+                    found <- true
+                else index <- index - 1
             Offset.from index
 
         let splitBasicBlock (block : BasicBlock) intermediatePoint =
@@ -250,19 +259,16 @@ and CfgInfo internal (method : MethodWithBody) =
 
         methodSize <- 0
 
-        basicBlocks
-        |> Seq.sortBy (fun b -> b.StartOffset)
-        |> Seq.iter (fun bb ->
+        let sorted = basicBlocks |> Seq.sortBy (fun b -> b.StartOffset)
+        for bb in sorted do
             methodSize <- methodSize + bb.BlockSize
             sortedBasicBlocks.Add bb
-        )
-
 
     let cfgDistanceFrom = GraphUtils.distanceCache<ICfgNode>()
 
     let findDistanceFrom node =
         Dict.getValueOrUpdate cfgDistanceFrom node (fun () ->
-        let dist = incrementalSourcedDijkstraAlgo node cfgDistanceFrom
+        let dist = incrementalSourcedShortestDistanceBfs node cfgDistanceFrom
         let distFromNode = Dictionary<ICfgNode, uint>()
         for i in dist do
             if i.Value <> infinity then
@@ -307,7 +313,6 @@ and CfgInfo internal (method : MethodWithBody) =
     member this.Sinks = sinks
     member this.Calls = calls
     member this.IsLoopEntry offset = loopEntries.Contains offset
-    member this.ResolveBasicBlockIndex offset = resolveBasicBlockIndex offset
     member this.ResolveBasicBlock offset = resolveBasicBlock offset
     member this.IsBasicBlockStart offset = (resolveBasicBlock offset).StartOffset = offset
     // Returns dictionary of shortest distances, in terms of basic blocks (1 step = 1 basic block transition)
@@ -385,7 +390,7 @@ and Method internal (m : MethodBase) as this =
 
         let exists, value = callGraphDist.TryGetValue x
         if not exists then
-            let dist = incrementalSourcedDijkstraAlgo (x :> ICallGraphNode) callGraphDist
+            let dist = incrementalSourcedShortestDistanceBfs (x :> ICallGraphNode) callGraphDist
             let distFromNode = Dictionary<ICallGraphNode, uint>()
             for i in dist do
                 if i.Value <> infinity then
@@ -408,7 +413,7 @@ and Method internal (m : MethodBase) as this =
         let exists, value = callGraphDist.TryGetValue x
         let mutable res = null
         if not exists then
-            let dist = incrementalSourcedDijkstraAlgo (x :> IReversedCallGraphNode) callGraphDist
+            let dist = incrementalSourcedShortestDistanceBfs (x :> IReversedCallGraphNode) callGraphDist
             let distToNode = Dictionary<IReversedCallGraphNode, uint>()
             for i in dist do
                 if i.Value <> infinity then
@@ -450,22 +455,6 @@ module public CodeLocation =
         | Some cfg -> cfg.HasSiblings blockStart.offset
         | None -> false
 
-type private ApplicationGraphMessage =
-    | ResetQueryEngine
-    | AddGoals of array<codeLocation>
-    | RemoveGoal of codeLocation
-    | SpawnStates of seq<IGraphTrackableState>
-    | AddForkedStates of parentState:IGraphTrackableState * forkedStates:seq<IGraphTrackableState>
-    | MoveState of positionForm:codeLocation * positionTo: IGraphTrackableState
-    | AddCFG of Option<AsyncReplyChannel<CfgInfo>> *  Method
-    | AddCallEdge of callForm:codeLocation * callTo: codeLocation
-    | GetShortestDistancesToGoals
-        of AsyncReplyChannel<ResizeArray<codeLocation * codeLocation * int>> * array<codeLocation>
-    | GetReachableGoals
-        of AsyncReplyChannel<Dictionary<codeLocation,HashSet<codeLocation>>> * array<codeLocation>
-    | GetDistanceToNearestGoal
-        of AsyncReplyChannel<seq<IGraphTrackableState * int>> * seq<IGraphTrackableState>
-
 type ApplicationGraph() =
 
     let dummyTerminalForCallEdge = 1<terminalSymbol>
@@ -502,102 +491,42 @@ type ApplicationGraph() =
             assert added
 
     let moveState (initialPosition : codeLocation) (stateWithNewPosition : IGraphTrackableState) =
+        // Not implemented yet
         ()
 
     let addStates (parentState : Option<IGraphTrackableState>) (states : array<IGraphTrackableState>) =
+        // Not implemented yet
         ()
 
     let getShortestDistancesToGoals (states : array<codeLocation>) =
         __notImplemented__()
 
-    let messagesProcessor = MailboxProcessor.Start(fun inbox ->
-        async{
-            while true do
-                let! message = inbox.Receive()
-                try
-                    match message with
-                    | ResetQueryEngine ->
-                        __notImplemented__()
-                    | AddCFG (replyChannel, method) ->
-                        let reply cfgInfo =
-                            match replyChannel with
-                            | Some ch -> ch.Reply cfgInfo
-                            | None -> ()
-                        assert method.HasBody
-                        let cfg = method.CFG |> Option.get
-                        reply cfg
-                    | AddCallEdge (src, dst) ->
-                        match src.method.CFG, dst.method.CFG with
-                        | Some _, Some _ ->  addCallEdge src dst
-                        | _ -> ()
-                    | AddGoals positions ->
-                        Logger.trace "Add goals."
-                    | RemoveGoal pos ->
-                        Logger.trace "Remove goal."
-                    | SpawnStates states -> Array.ofSeq states |> addStates None
-                    | AddForkedStates (parentState, forkedStates) ->
-                        addStates (Some parentState) (Array.ofSeq forkedStates)
-                    | MoveState (src, dst) ->
-                        moveState src dst
-                    | GetShortestDistancesToGoals (replyChannel, states) ->
-                        Logger.trace "Get shortest distances."
-                        __notImplemented__()
-                    | GetDistanceToNearestGoal (replyChannel, states) ->
-                        replyChannel.Reply []
-                    | GetReachableGoals (replyChannel, states) -> __notImplemented__()
-                with
-                | e ->
-                    Logger.error $"Something wrong in application graph messages processor: \n %A{e} \n %s{e.Message} \n %s{e.StackTrace}"
-                    match message with
-                    | AddCFG (Some ch, _) -> ch.Reply Unchecked.defaultof<CfgInfo>
-                    | _ -> ()
-        }
-    )
-
-    do
-        messagesProcessor.Error.Add(fun e ->
-            Logger.error $"Something wrong in application graph messages processor: \n %A{e} \n %s{e.Message} \n %s{e.StackTrace}"
-            raise e
-            )
-
     member this.RegisterMethod (method: Method) =
-        messagesProcessor.Post (AddCFG (None, method))
+        assert method.HasBody
 
     member this.AddCallEdge (sourceLocation : codeLocation) (targetLocation : codeLocation) =
         addCallEdge sourceLocation targetLocation
 
     member this.SpawnState (state:IGraphTrackableState) =
-        messagesProcessor.Post <| SpawnStates [|state|]
+        [|state|] |> addStates None
 
     member this.SpawnStates (states:seq<IGraphTrackableState>) =
-        messagesProcessor.Post <| SpawnStates states
+        Array.ofSeq states |> addStates None
 
-    member this.AddForkedStates (parentState:IGraphTrackableState) (states:seq<IGraphTrackableState>) =
-        messagesProcessor.Post <| AddForkedStates (parentState,states)
+    member this.AddForkedStates (parentState:IGraphTrackableState) (forkedStates:seq<IGraphTrackableState>) =
+        addStates (Some parentState) (Array.ofSeq forkedStates)
 
     member this.MoveState (fromLocation : codeLocation) (toLocation : IGraphTrackableState) =
-        messagesProcessor.Post <| MoveState (fromLocation, toLocation)
+        moveState fromLocation toLocation
 
     member x.AddGoal (location:codeLocation) =
-        messagesProcessor.Post <| AddGoals [|location|]
+        ()
 
     member x.AddGoals (locations:array<codeLocation>) =
-        messagesProcessor.Post <| AddGoals locations
+        ()
 
     member x.RemoveGoal (location:codeLocation) =
-        messagesProcessor.Post <| RemoveGoal location
-
-    member this.GetShortestDistancesToAllGoalsFromStates (states: array<codeLocation>) =
-        messagesProcessor.PostAndReply (fun ch -> GetShortestDistancesToGoals(ch, states))
-
-    member this.GetDistanceToNearestGoal (states: seq<IGraphTrackableState>) =
-        messagesProcessor.PostAndReply (fun ch -> GetDistanceToNearestGoal(ch, states))
-
-    member this.GetGoalsReachableFromStates (states: array<codeLocation>) =
-        messagesProcessor.PostAndReply (fun ch -> GetReachableGoals(ch, states))
-
-    member this.ResetQueryEngine() =
-        messagesProcessor.Post ResetQueryEngine
+        ()
 
 type IVisualizer =
     abstract DrawInterproceduralEdges: bool
