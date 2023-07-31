@@ -868,7 +868,7 @@ module internal Memory =
 
     and private commonReadStructUnsafe fields structType startByte endByte pos stablePos =
         let readField fieldId = fields[fieldId]
-        let state = makeEmpty false
+        let state = makeEmpty false false
         let reportError _ = __unreachable__()
         commonReadFieldsUnsafe state reportError readField false structType startByte endByte pos stablePos
 
@@ -1260,7 +1260,7 @@ module internal Memory =
 
     and private writeStructUnsafe structTerm fields structType startByte value =
         let readField fieldId = fields[fieldId]
-        let state = makeEmpty false
+        let state = makeEmpty false false
         let reportError _ = __unreachable__()
         let updatedFields = writeFieldsUnsafe state reportError readField false structType startByte value
         let writeField structTerm (fieldId, value) = writeStruct structTerm fieldId value
@@ -1318,7 +1318,7 @@ module internal Memory =
             | ClassType _ -> writeClassUnsafe state reportError loc typ offset value
             | ArrayType _ -> writeArrayUnsafe state reportError loc typ offset value
             | StructType _ -> internalfail "writeUnsafe: unsafe writing is not implemented for structs" // TODO: boxed location?
-            | _ -> internalfailf "expected complex type, but got %O" typ
+            | _ -> internalfailf $"expected complex type, but got {typ}"
         | StackLocation loc -> writeStackUnsafe state reportError loc offset value
         | StaticLocation loc -> writeStaticUnsafe state reportError loc offset value
 
@@ -1331,7 +1331,7 @@ module internal Memory =
         let ptr = Ptr baseAddress field.typ offset
         match ptr.term with
         | Ptr(baseAddress, _, offset) -> writeUnsafe state (fun _ _ -> ()) baseAddress offset value
-        | _ -> internalfailf "expected to get ptr, but got %O" ptr
+        | _ -> internalfailf $"expected to get ptr, but got {ptr}"
 
     let rec private writeSafe state address value =
         match address with
@@ -1357,7 +1357,7 @@ module internal Memory =
         match reference.term with
         | Ref address -> writeSafe state address value
         | Ptr(address, _, offset) -> writeUnsafe state reportError address offset value
-        | _ -> internalfailf "Writing: expected reference, but got %O" reference
+        | _ -> internalfailf $"Writing: expected reference, but got {reference}"
         state
 
 // ------------------------------- Allocation -------------------------------

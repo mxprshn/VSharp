@@ -48,7 +48,6 @@ namespace VSharp.TestRunner
                 try
                 {
                     object? result;
-                    string message = test.ErrorMessage;
                     var debugAssertFailed = message != null && message.Contains("Debug.Assert failed");
                     var shouldInvoke = suiteType switch
                     {

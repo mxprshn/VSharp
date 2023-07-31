@@ -5,6 +5,7 @@ open System.Reflection
 open VSharp
 open VSharp.Core
 open VSharp.Interpreter.IL
+open VSharp.MethodSequences
 
 type internal methodSequenceResult =
     | NotExist

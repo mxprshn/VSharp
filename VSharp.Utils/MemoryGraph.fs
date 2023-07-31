@@ -94,6 +94,10 @@ with
         | Some m -> m
         | None -> declaringType.GetConstructors() |> Seq.find (fun c -> c.MetadataToken = x.token) :> MethodBase
 
+    member x.DecodeMethodInfo() : MethodInfo =
+        let declaringType = x.declaringType.Decode()
+        declaringType.GetMethods() |> Seq.find (fun m -> m.MetadataToken = x.token)
+
 [<CLIMutable>]
 [<Serializable>]
 type referenceRepr = {
@@ -218,7 +222,7 @@ type extMockRepr = {
     methodImplementation : obj array
 }
 with
-    static member Encode name baseMethod results =
+    static member Encode name (baseMethod : MethodBase) results =
         {
             name = name
             baseMethod = methodRepr.Encode baseMethod
@@ -226,7 +230,7 @@ with
         }
 
     member x.Decode() =
-        let baseMethod = x.baseMethod.Decode()
+        let baseMethod = x.baseMethod.DecodeMethodInfo()
         ExtMocking.Type.Deserialize x.name baseMethod x.methodImplementation
 
 [<CLIMutable>]
@@ -370,12 +374,11 @@ type MemoryGraph(repr : memoryRepr, sequenceReprs : methodSequenceRepr array, mo
                 let ref = { index = index.Value } : InvokableMethodSequenceRef
                 ref : obj
             else sourceObj
-        | :? pointerRepr -> __notImplemented__()
         | :? pointerRepr as repr when repr.sightType = intPtrIndex ->
-            let shift = decodeValue repr.shift :?> int64
+            let shift = decodeValue createMethodSequenceRefs repr.shift :?> int64
             IntPtr(shift) :> obj
         | :? pointerRepr as repr when repr.sightType = uintPtrIndex ->
-            let shift = decodeValue repr.shift :?> int64 |> uint64
+            let shift = decodeValue createMethodSequenceRefs repr.shift :?> int64 |> uint64
             UIntPtr(shift) :> obj
         | :? pointerRepr as repr ->
             internalfail $"decoding pointer is not implemented {repr}"
@@ -390,7 +393,7 @@ type MemoryGraph(repr : memoryRepr, sequenceReprs : methodSequenceRepr array, mo
             else
                 let t = sourceTypes[repr.typ]
                 if not t.IsValueType then
-                    internalfailf "Expected value type inside object, but got representation of %s!" t.FullName
+                    internalfailf $"Expected value type inside object, but got representation of %s{t.FullName}!"
                 let obj = allocateDefault repr
                 decodeStructure repr obj
                 obj

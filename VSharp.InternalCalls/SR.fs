@@ -116,10 +116,6 @@ module SR =
         assert(List.length args = 0)
         Memory.AllocateString "ArgumentOutOfRange_NeedNonNegNum" state
 
-    let internal get_ArgumentOutOfRange_SmallCapacity (state : state) (args : term list) : term =
-        assert(List.length args = 0)
-        Memory.AllocateString "ArgumentOutOfRange_SmallCapacity" state
-
     let internal get_ArgumentOutOfRange_DecimalScale (state : state) (args : term list) : term =
         assert(List.length args = 0)
         Memory.AllocateString "ArgumentOutOfRange_DecimalScale" state

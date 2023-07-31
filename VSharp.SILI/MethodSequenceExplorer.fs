@@ -9,6 +9,7 @@ open Microsoft.FSharp.Collections
 open VSharp
 open VSharp.Core
 open VSharp.Interpreter.IL
+open VSharp.MethodSequences
 
 type internal IMethodSequenceForwardExplorer =
     abstract MakeStep : methodSequenceState -> methodSequenceState list

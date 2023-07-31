@@ -270,7 +270,7 @@ public static class MethodSequences
 
     // ок ли, что если guided searcher запаузил стейт, а других стейтов нет, а время есть, то мы не
     // запускаем этот стейт снова
-    [TestSvm(guidedMode: false)]
+    [TestSvm(recThresholdForTest: 0)]
     public static void ListSmokeTest2(int i)
     {
         var list = new List<int>();

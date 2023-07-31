@@ -154,8 +154,8 @@ module TestGenerator =
             let indices = Array.map Array.ofList indices
             test.MemoryGraph.AddCompactArrayRepresentation typ defaultValue indices values lengths lowerBounds index
 
-    let rec private term2obj (model : model) state (cache : testGeneratorCache) (test : UnitTest) (methodSequenceObjRef : obj) = function
-        let term2obj = term2obj model state indices mockCache implementations test
+    let rec private term2obj (model : model) state (cache : testGeneratorCache) (test : UnitTest) (methodSequenceObjRef : obj) (term : term) =
+        let term2obj = term2obj model state cache test
         match term with
         | {term = Concrete(_, TypeUtils.AddressType)} -> __unreachable__()
         | {term = Concrete(v, t)} when t = typeof<IntPtr> ->
@@ -165,14 +165,12 @@ module TestGenerator =
         | {term = Concrete(v, t)} when t.IsEnum -> test.MemoryGraph.RepresentEnum v
         | {term = Concrete(v, _)} -> v
         | {term = Nop} -> null
-        | {term = Constant _ } as c -> model.Eval c |> term2obj model state cache test methodSequenceObjRef
+        | {term = Constant _ } as c -> model.Eval c |> term2obj methodSequenceObjRef
         | {term = Struct(fields, t)} when Types.IsNullable t ->
             let valueField, hasValueField = Reflection.fieldsOfNullable t
-            let hasValue : bool = fields[hasValueField] |> term2obj model state cache test null |> unbox
-                fields[valueField] |> term2obj model state cache test null
-            let hasValue : bool = fields[hasValueField] |> term2obj model state cache test null |> unbox
+            let hasValue : bool = term2obj null fields[hasValueField] |> unbox
             if hasValue then
-                fields[valueField] |> term2obj model state cache test null
+                term2obj null fields[valueField]
             else null
         | {term = Struct(fields, t)} as term ->
             let methodSequenceObjRef =
@@ -187,7 +185,7 @@ module TestGenerator =
                     else null
             let fieldReprs =
                 t |> Reflection.fieldsOf false |>
-                    Array.map (fun (field, _) -> model.Eval fields.[field] |> model.Complete |> term2obj model state cache test null)
+                    Array.map (fun (field, _) -> model.Eval fields.[field] |> model.Complete |> term2obj null)
             test.MemoryGraph.RepresentStruct t fieldReprs methodSequenceObjRef
         | NullRef _
         | NullPtr -> null
@@ -198,15 +196,15 @@ module TestGenerator =
                 match PersistentDict.tryFind modelState.allocatedTypes addr with
                 | Some typ ->
                     let eval address =
-                        address |> Ref |> Memory.Read modelState |> model.Complete |> term2obj model state cache test null
-                    let arr2Obj = encodeArrayCompactly state model (term2obj model state cache test null)
+                        address |> Ref |> Memory.Read modelState |> model.Complete |> term2obj null
+                    let arr2Obj = encodeArrayCompactly state model (term2obj null)
                     let encodeMock = encodeTypeMock model state cache test
                     obj2test eval arr2Obj cache encodeMock test addr typ methodSequenceObjRef
                 // If address is not in the 'allocatedTypes', it should not be allocated, so result is 'null'
                 | None -> null
             | PrimitiveModel _ -> __unreachable__()
         | {term = HeapRef({term = ConcreteHeapAddress(addr)}, _)} ->
-            let term2Obj = model.Eval >> term2obj model state cache test null
+            let term2Obj = model.Eval >> term2obj null
             let eval address =
                 address |> Ref |> Memory.Read state |> term2Obj
             let arr2Obj = encodeArrayCompactly state model term2Obj
@@ -216,7 +214,7 @@ module TestGenerator =
         | CombinedTerm(terms, t) ->
             let slices = List.map model.Eval terms
             ReinterpretConcretes slices t
-        | term -> internalfailf "creating object from term: unexpected term %O" term
+        | term -> internalfailf $"creating object from term: unexpected term {term}"
 
     and private encodeTypeMock (model : model) state (cache : testGeneratorCache) (test : UnitTest) mock : Mocking.Type =
         let mockedType = ref Mocking.Type.Empty
@@ -237,8 +235,8 @@ module TestGenerator =
                         freshMock.AddMethod(method, Array.map eval values)
             freshMock
 
-    let encodeExternMock (model : model) state indices mockCache implementations test (methodMock : IMethodMock) =
-        let eval = model.Eval >> term2obj model state indices mockCache implementations test
+    let encodeExternMock (model : model) state (cache : testGeneratorCache) test (methodMock : IMethodMock) =
+        let eval = model.Eval >> term2obj model state cache test null
         let clauses = methodMock.GetImplementationClauses() |> Array.map eval
         let extMock = extMockRepr.Encode test.GetPatchId methodMock.BaseMethod clauses
         test.AddExternMock extMock
@@ -316,11 +314,11 @@ module TestGenerator =
                 for entry in state.methodMocks do
                     let mock = entry.Value
                     match mock.MockingType with
-                    | Default ->
+                    | MockingType.Default ->
                         let values = mock.GetImplementationClauses()
                         cache.implementations.Add(mock.BaseMethod, values)
                     | Extern ->
-                        encodeExternMock model state indices mockCache implementations test mock
+                        encodeExternMock model state cache test mock
 
                 let concreteClassParams = Array.zeroCreate classParams.Length
                 let mockedClassParams = Array.zeroCreate classParams.Length

@@ -10,6 +10,7 @@ type IMethod =
     abstract ReturnType : Type
     abstract DeclaringType : Type
     abstract ReflectedType : Type
+    abstract IsExternalMethod : bool
     abstract Parameters : Reflection.ParameterInfo[]
     abstract LocalVariables : IList<Reflection.LocalVariableInfo>
     abstract HasThis : bool

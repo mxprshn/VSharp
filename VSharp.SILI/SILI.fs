@@ -1,6 +1,7 @@
 namespace VSharp.Interpreter.IL
 
 open System
+open System.Collections.Generic
 open System.Diagnostics
 open System.Reflection
 open System.Threading.Tasks
@@ -56,8 +57,8 @@ type public SILI(options : SiliOptions) =
 
     let mutable isCoverageAchieved : unit -> bool = always false
 
-    let statesWaitingForSequence = Dictionary<cilState, (unit -> unit)>()
-    
+    let statesWaitingForSequence = Dictionary<cilState, unit -> unit>()
+
     let () =
         if options.visualize then
             DotVisualizer options.outputDirectory :> IVisualizer |> Application.setVisualizer
