@@ -433,7 +433,7 @@ module internal Memory =
 
 // -------------------------- Allocation helpers --------------------------
 
-    let freshAddress state =
+    let private freshAddress state =
         let newTime =
             if isModelState state then
                 let startingTime = VectorTime.decrement state.startingTime
@@ -444,12 +444,19 @@ module internal Memory =
         state.currentTime <- newTime
         state.currentTime
 
-    let allocateType state (typ : Type) =
-        assert(not typ.IsAbstract)
+    let private allocateType state symbolicType =
         let concreteAddress = freshAddress state
         assert(not <| PersistentDict.contains concreteAddress state.allocatedTypes)
-        state.allocatedTypes <- PersistentDict.add concreteAddress (ConcreteType typ) state.allocatedTypes
+        state.allocatedTypes <- PersistentDict.add concreteAddress symbolicType state.allocatedTypes
         concreteAddress
+
+    let allocateConcreteType state (typ : Type) =
+        assert(not typ.IsAbstract)
+        allocateType state (ConcreteType typ)
+
+    let allocateMockType state mock =
+        allocateType state (MockType mock)
+
 
 // =============== Marshalling/unmarshalling without state changing ===============
 
@@ -465,7 +472,7 @@ module internal Memory =
             | None ->
                 let typ = mostConcreteType (obj.GetType()) t
                 if typ.IsValueType then Logger.trace "allocateObjectIfNeed: boxing concrete struct %O" obj
-                let concreteAddress = allocateType state typ
+                let concreteAddress = allocateConcreteType state typ
                 cm.Allocate concreteAddress obj
                 concreteAddress
         ConcreteHeapAddress address
@@ -828,7 +835,7 @@ module internal Memory =
         let size = sizeOf address
         match startByte.term, endByte.term with
         | Concrete(:? int as s, _), Concrete(:? int as e, _) when s = 0 && size = e -> List.singleton address
-        | _ -> sprintf "reading: reinterpreting %O" address |> undefinedBehaviour
+        | _ -> $"Reading: reinterpreting {address}" |> undefinedBehaviour
 
     let sliceTerm term startByte endByte pos stablePos =
         match term.term with
@@ -998,7 +1005,7 @@ module internal Memory =
                 | StructType _ -> readBoxedUnsafe state loc typ offset viewSize
                 | _ when isPrimitive typ || typ.IsEnum ->
                     readBoxedUnsafe state loc typ offset viewSize
-                | _ -> internalfailf "expected complex type, but got %O" typ
+                | _ -> internalfailf $"Expected complex type, but got {typ}"
             | StackLocation loc -> readStackUnsafe state reportError loc offset viewSize
             | StaticLocation loc -> readStaticUnsafe state reportError loc offset viewSize
         combine slices sightType
@@ -1029,12 +1036,12 @@ module internal Memory =
         | Ref address -> readSafe state address
         | Ptr(baseAddress, sightType, offset) -> readUnsafe state reportError baseAddress offset sightType
         | Union gvs -> gvs |> List.map (fun (g, v) -> (g, read state reportError v)) |> Merging.merge
-        | _ -> internalfailf "Safe reading: expected reference, but got %O" reference
+        | _ -> internalfailf $"Safe reading: expected reference, but got {reference}"
 
 // ------------------------------- Writing -------------------------------
 
     let rec private ensureConcreteType typ =
-        if isOpenType typ then __insufficientInformation__ "Cannot write value of generic type %O" typ
+        if isOpenType typ then __insufficientInformation__ $"Cannot write value of generic type {typ}"
 
     let writeStackLocation (s : state) key value =
         s.stack <- CallStack.writeStackLocation s.stack key value
@@ -1369,7 +1376,7 @@ module internal Memory =
     let allocateClass state typ =
         assert (not <| isSubtypeOrEqual typ typeof<String>)
         assert (not <| isSubtypeOrEqual typ typeof<Delegate>)
-        let concreteAddress = allocateType state typ
+        let concreteAddress = allocateConcreteType state typ
         match memoryMode with
         // TODO: it's hack for reflection, remove it after concolic will be implemented
         | _ when isSubtypeOrEqual typ typeof<Type> -> ()
@@ -1380,7 +1387,7 @@ module internal Memory =
     // TODO: unify allocation with unmarshalling
     let allocateArray state typ lowerBounds lengths =
         assert (isSubtypeOrEqual typ typeof<Array>)
-        let concreteAddress = allocateType state typ
+        let concreteAddress = allocateConcreteType state typ
         let arrayType = symbolicTypeToArrayType typ
         let address = ConcreteHeapAddress concreteAddress
         let concreteLengths = tryIntListFromTermList lengths
@@ -1400,7 +1407,7 @@ module internal Memory =
     let allocateConcreteVector state (elementType : Type) length contents =
         match memoryMode, length.term with
         | ConcreteMemory, Concrete(:? int as intLength, _) ->
-            let concreteAddress = allocateType state (elementType.MakeArrayType())
+            let concreteAddress = allocateConcreteType state (elementType.MakeArrayType())
             let array = Array.CreateInstance(elementType, intLength)
             Seq.iteri (fun i value -> array.SetValue(value, i)) contents
             state.concreteMemory.Allocate concreteAddress (array :> obj)
@@ -1451,7 +1458,7 @@ module internal Memory =
 
     let allocateDelegate state delegateTerm =
         let typ = typeOf delegateTerm
-        let concreteAddress = allocateType state typ
+        let concreteAddress = allocateConcreteType state typ
         let address = ConcreteHeapAddress concreteAddress
         // TODO: create real Delegate objects and use concrete memory
         state.delegates <- PersistentDict.add concreteAddress delegateTerm state.delegates
@@ -1459,7 +1466,7 @@ module internal Memory =
 
     let allocateBoxedLocation state value =
         let typ = typeOf value
-        let concreteAddress = allocateType state typ
+        let concreteAddress = allocateConcreteType state typ
         let address = ConcreteHeapAddress concreteAddress
         match memoryMode, tryTermToObj state value with
         // 'value' may be null, if it's nullable value type

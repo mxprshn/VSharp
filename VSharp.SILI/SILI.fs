@@ -141,7 +141,7 @@ type public SILI(options : SiliOptions) =
                     else Memory.ForcePopFrames (callStackSize - 1) cilState.state
                 statistics.TrackFinished cilState
                 let generateTest() =
-                    match TestGenerator.state2test isError entryMethod cilState message with
+                    match TestGenerator.state2test isError entryMethod cilState.state message with
                     | Some test ->
                         //statistics.TrackFinished cilState
                         reporter test
@@ -161,7 +161,8 @@ type public SILI(options : SiliOptions) =
             reportStateIncomplete cilState
 
     let wrapOnTest (action : Action<UnitTest>) (state : cilState) =
-        Logger.info $"Result of method {(entryMethodOf state).FullName} is {state.Result}"
+        let result = Memory.StateResult state.state
+        Logger.info "Result of method %s is %O" (entryMethodOf state).FullName result
         Application.terminateState state
         reportState action.Invoke false state null
 
@@ -172,6 +173,7 @@ type public SILI(options : SiliOptions) =
         reportState action.Invoke true state errorMessage
 
     let wrapOnStateIIE (action : Action<InsufficientInformationException>) (state : cilState) =
+        searcher.Remove state
         statistics.IncompleteStates.Add(state)
         Application.terminateState state
         action.Invoke state.iie.Value
@@ -186,6 +188,7 @@ type public SILI(options : SiliOptions) =
                 state.iie <- Some e
             reportStateIncomplete state
         | _ ->
+            searcher.Remove state
             statistics.InternalFails.Add(e)
             Application.terminateState state
             action.Invoke(entryMethodOf state, e)
@@ -310,8 +313,8 @@ type public SILI(options : SiliOptions) =
                     !!(IsNullReference this) |> AddConstraint initialState
                     Some this
             let parameters = SILI.AllocateByRefParameters initialState method
-            ILInterpreter.InitFunctionFrame initialState method this (Some parameters)
-            let cilStates = ILInterpreter.CheckDisallowNullAssumptions cilState method false
+            Memory.InitFunctionFrame initialState method this (Some parameters)
+            let cilStates = ILInterpreter.CheckDisallowNullAttribute method None cilState false id
             assert (List.length cilStates = 1)
             let [cilState] = cilStates
             if isMethodSequenceGenerationEnabled then
@@ -334,7 +337,7 @@ type public SILI(options : SiliOptions) =
                 let argsNumber = MakeNumber mainArguments.Length
                 Memory.AllocateConcreteVectorArray state argsNumber stringType args
             let arguments = Option.map (argsToState >> Some >> List.singleton) optionArgs
-            ILInterpreter.InitFunctionFrame state method None arguments
+            Memory.InitFunctionFrame state method None arguments
             if Option.isNone optionArgs then
                 // NOTE: if args are symbolic, constraint 'args != null' is added
                 let parameters = method.Parameters
@@ -348,7 +351,7 @@ type public SILI(options : SiliOptions) =
                     | StateModel(modelState, _) -> modelState
                     | _ -> __unreachable__()
                 let argsForModel = Memory.AllocateVectorArray modelState (MakeNumber 0) typeof<String>
-                Memory.WriteLocalVariable modelState (ParameterKey argsParameter) argsForModel
+                Memory.WriteStackLocation modelState (ParameterKey argsParameter) argsForModel
             Memory.InitializeStaticMembers state method.DeclaringType
             let initialState = makeInitialState method state
             if isMethodSequenceGenerationEnabled && not hasConcreteMainArguments then

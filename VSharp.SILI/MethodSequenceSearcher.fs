@@ -51,7 +51,7 @@ type internal MethodSequenceSearcher(maxSequenceLength : uint, backwardExplorerF
         let baseMethod = Application.getMethod Loader.MethodSequenceBase
         initialCoreState.model <- Memory.EmptyModel baseMethod
         let initialCilState = CilStateOperations.makeInitialState baseMethod initialCoreState
-        ILInterpreter.InitFunctionFrame initialCoreState baseMethod None None
+        Memory.InitFunctionFrame initialCoreState baseMethod None None
         let this =
             if MethodSequenceHelpers.hasInstanceThis targetMethod
             then Hole targetMethod.DeclaringType |> Some

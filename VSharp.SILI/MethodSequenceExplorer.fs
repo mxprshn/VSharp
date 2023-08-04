@@ -159,7 +159,7 @@ type internal MethodSequenceForwardExplorer(interpreter : ILInterpreter) =
             match state.currentSequence with
             | methodSequenceElement.Call(_, Some({ typ = resultType; index = resultIdx }), _, _) :: _->
                 let resultKey = TemporaryLocalVariableKey(resultType, resultIdx)
-                Memory.WriteLocalVariable cilState.state resultKey result
+                Memory.WriteStackLocation cilState.state resultKey result
             | _ -> __unreachable__()
         | _ -> __unreachable__()
 
@@ -228,7 +228,7 @@ type internal MethodSequenceForwardExplorer(interpreter : ILInterpreter) =
             let name = $"ret_{typ.Name}_{index}"
             Memory.AllocateTemporaryLocalVariableOfType newCoreState name index typ |> ignore
             let resultKey = TemporaryLocalVariableKey(typ, index)
-            Memory.WriteLocalVariable newCoreState resultKey (Memory.DefaultOf typ)
+            Memory.WriteStackLocation newCoreState resultKey (Memory.DefaultOf typ)
             [
                 {
                     newState with
@@ -299,7 +299,7 @@ type internal MethodSequenceForwardExplorer(interpreter : ILInterpreter) =
 
             let argumentTerms = MethodSequenceHelpers.thisAndArguments this arguments |> Seq.mapi argumentToTerm |> Seq.toList
             let wrapper = getWrapperMethod methodToCall
-            interpreter.InitFunctionFrameCIL newCilState wrapper None (Some argumentTerms)
+            ILInterpreter.InitFunctionFrameCIL newCilState wrapper None (Some argumentTerms)
             [
                 {
                     newState with
