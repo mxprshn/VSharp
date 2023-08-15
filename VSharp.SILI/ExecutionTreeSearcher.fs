@@ -28,8 +28,11 @@ type internal ExecutionTreeSearcher(randomSeed : int option) =
             trees[method] <- ExecutionTree(Seq.head methodStates)
 
     let pick() =
-        let method = methods[getRandomInt() % methods.Count]
-        trees[method].RandomPick getRandomInt
+        if methods.Count = 0 then
+            None
+        else
+            let method = methods[getRandomInt() % methods.Count]
+            trees[method].RandomPick getRandomInt
 
     // This function is optimized for selector based on entry method of state (like in fair searcher)
     let pickWithSelector selector =

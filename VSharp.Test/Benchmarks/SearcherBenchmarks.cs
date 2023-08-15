@@ -51,7 +51,7 @@ public class SearcherBenchmarks
     [Test]
     public void BizHawkLR35902IsCoveredWithExecutionTreeInterleavedSearcher([Values(0, 42, 73)] int randomSeed)
     {
-        var target = BizHawkTargets.LR35902().Single(t => t.Method.Name.Contains("ExecuteOne"));
+        var target = Targets.BizHawk.LR35902ExecuteOne;
         var stepsLimit = 30000u;
         Assert.True(
             Benchmarks.RunBenchmark(
@@ -67,5 +67,32 @@ public class SearcherBenchmarks
         var coverage = Benchmarks.GetMethodCoverage(target, statistics);
         TestContext.Out.WriteLine($"Coverage: {coverage}%");
         Assert.That(coverage, Is.GreaterThan(90));
+    }
+
+    [Test]
+    public void UnityCollections()
+    {
+        var targets = Targets.Unity.Collections.All.ToList();
+        TestContext.Progress.WriteLine($"Found {targets.Count} method targets in Unity.Collections");
+        var i = 1;
+        foreach (var target in targets)
+        {
+            TestContext.Progress.WriteLine($"Running V# on method {target} ({i} of {targets.Count})");
+            i++;
+            Assert.True(
+                Benchmarks.RunBenchmark(
+                    target,
+                    VSharp.SearchStrategy.ExecutionTreeContributedCoverage,
+                    out var statistics,
+                    stepsLimit: 30000,
+                    releaseBranches: false,
+                    randomSeed: 0,
+                    renderAndBuildTests: true
+                )
+            );
+            var coverage = Benchmarks.GetMethodCoverage(target, statistics);
+            TestContext.Out.WriteLine($"Coverage: {coverage}%");
+            Assert.That(coverage, Is.GreaterThan(90));
+        }
     }
 }

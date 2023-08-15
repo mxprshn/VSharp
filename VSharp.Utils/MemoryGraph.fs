@@ -286,9 +286,9 @@ type MemoryGraph(repr : memoryRepr, mockStorage : MockStorage, createCompactRepr
             // Case for structs or classes of .NET type
             let t = sourceTypes[repr.typ]
             if t.IsByRefLike then
-                internalfailf "Generating test: unable to create byref-like object (type = %O)" t
+                internalfailf $"Generating test: unable to create byref-like object (type = {t})"
             if t.ContainsGenericParameters then
-                internalfailf "Generating test: unable to create object with generic type parameters (type = %O)" t
+                internalfailf $"Generating test: unable to create object with generic type parameters (type = {t})"
             else System.Runtime.Serialization.FormatterServices.GetUninitializedObject(t)
         | :? structureRepr as repr ->
             // Case for mocked structs or classes
