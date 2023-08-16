@@ -43,7 +43,7 @@ module API =
 
     [<AutoOpen>]
     module Terms =
-        val Nop : term
+        val Nop : unit ->term
         val Concrete : 'a -> Type -> term
         val Constant : string -> ISymbolicConstantSource -> Type -> term
         val Expression : operation -> term list -> Type -> term
@@ -53,8 +53,8 @@ module API =
         val HeapRef : heapAddress -> Type -> term
         val Union : (term * term) list -> term
 
-        val True : term
-        val False : term
+        val True : unit -> term
+        val False : unit -> term
         val NullRef : Type -> term
         val MakeNullPtr : Type -> term
         val ConcreteHeapAddress : concreteHeapAddress -> term
@@ -68,7 +68,7 @@ module API =
 
         val TypeOf : term -> Type
         val TypeOfLocation : term -> Type
-        val MostConcreteTypeOfHeapRef : state -> term -> Type
+        val MostConcreteTypeOfRef : state -> term -> Type
         val TypeOfAddress : state -> term -> Type
 
         val GetHashCode : term -> term
@@ -82,6 +82,7 @@ module API =
         val IsStruct : term -> bool
         val IsReference : term -> bool
         val IsPtr : term -> bool
+        val IsRefOrPtr : term -> bool
         val IsConcrete : term -> bool
         val IsNullReference : term -> term
 
@@ -117,6 +118,19 @@ module API =
         val (|RefSubtypeRefSource|_|) : ISymbolicConstantSource -> option<heapAddress * heapAddress>
         val (|GetHashCodeSource|_|) : ISymbolicConstantSource -> option<term>
 
+        val (|Int8T|_|) : term -> option<unit>
+        val (|UInt8T|_|) : term -> option<unit>
+        val (|Int16T|_|) : term -> option<unit>
+        val (|UInt16T|_|) : term -> option<unit>
+        val (|Int32T|_|) : term -> option<unit>
+        val (|UInt32T|_|) : term -> option<unit>
+        val (|Int64T|_|) : term -> option<unit>
+        val (|UInt64T|_|) : term -> option<unit>
+        val (|BoolT|_|) : term -> option<unit>
+        val (|Float32T|_|) : term -> option<unit>
+        val (|Float64T|_|) : term -> option<unit>
+        val (|FloatT|_|) : term -> option<unit>
+
         val GetHeapReadingRegionSort : ISymbolicConstantSource -> regionSort
 
         val SpecializeWithKey : term -> heapArrayKey -> heapArrayKey -> term
@@ -139,7 +153,7 @@ module API =
         val IndexType : Type
         val TLength : Type
         val IsBool : Type -> bool
-        val IsInteger : Type -> bool
+        val isIntegral : Type -> bool
         val IsReal : Type -> bool
         val IsNumeric : Type -> bool
         val IsPointer : Type -> bool
@@ -279,6 +293,7 @@ module API =
         val AllocateDefaultArray : state -> term list -> Type -> term
         val AllocateVectorArray : state -> term -> Type -> term
         val AllocateConcreteVectorArray : state -> term -> Type -> 'a seq -> term
+        val AllocateArrayFromFieldInfo : state -> FieldInfo -> term
         val AllocateString : string -> state -> term
         val AllocateEmptyString : state -> term -> term
         val AllocateDelegate : state -> term -> term
@@ -310,6 +325,7 @@ module API =
 
         val StringLength : state -> term -> term
         val StringCtorOfCharArray : state -> term -> term -> state list
+        val StringCtorOfCharArrayAndLen : state -> term -> term -> term -> state list
 
         // TODO: get rid of all unnecessary stuff below!
         val ComposeStates : state -> state -> state list

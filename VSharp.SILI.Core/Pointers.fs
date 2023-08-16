@@ -48,53 +48,53 @@ module internal Pointers =
 
 // -------------------------- Comparison operations --------------------------
 
-    let private isZero x = simplifyEqual x zeroAddress id
+    let private isZero x = simplifyEqual x (zeroAddress()) id
 
-    let isZeroAddress x = fastNumericCompare x zeroAddress
+    let isZeroAddress x = fastNumericCompare x (zeroAddress())
 
     let rec private compareAddress = function
         | PrimitiveStackLocation k1, PrimitiveStackLocation k2 -> makeBool (k1 = k2)
-        | ClassField(addr1, f1), ClassField(addr2, f2) -> if f1 = f2 then simplifyEqual addr1 addr2 id else False
-        | StructField(addr1, f1), StructField(addr2, f2) -> if f1 = f2 then compareAddress(addr1, addr2) else False
+        | ClassField(addr1, f1), ClassField(addr2, f2) -> if f1 = f2 then simplifyEqual addr1 addr2 id else False()
+        | StructField(addr1, f1), StructField(addr2, f2) -> if f1 = f2 then compareAddress(addr1, addr2) else False()
         | ArrayIndex(addr1, idcs1, t1), ArrayIndex(addr2, idcs2, t2) ->
             if t1 = t2 && idcs1.Length = idcs2.Length then simplifyEqual addr1 addr2 id
-            else False
+            else False()
         | StackBufferIndex(k1, i1), StackBufferIndex(k2, i2) -> makeBool (k1 = k2) &&& simplifyEqual i1 i2 id
         | BoxedLocation(addr1, _), BoxedLocation(addr2, _) -> makeBool (addr1 = addr2)
         | ArrayLength _, ArrayLength _
         | ArrayLowerBound _, ArrayLowerBound _
         | StaticField _, StaticField _ -> __unreachable__()
-        | _ -> False
+        | _ -> False()
 
     let rec private comparePointerBase left right =
         match left, right with
         | StackLocation loc1, StackLocation loc2 -> makeBool (loc1 = loc2)
         | HeapLocation(loc1, _), HeapLocation(loc2, _) -> simplifyEqual loc1 loc2 id
         | StaticLocation _, StaticLocation _ -> __unreachable__()
-        | _ -> False
+        | _ -> False()
 
     let rec simplifyReferenceEqualityk x y k =
         simplifyGenericBinary "reference comparison" x y k
             (fun _ _ _ -> __unreachable__())
             (fun x y k ->
                 match x.term, y.term with
-                | _ when x = y -> k True
+                | _ when x = y -> k (True())
                 | Ref address1, Ref address2 -> compareAddress (address1, address2) |> k
                 | Ptr(address1, _, shift1), Ptr(address2, _, shift2) ->
                     let addressEq = comparePointerBase address1 address2
                     addressEq &&& simplifyEqual shift1 shift2 id |> k
                 | Concrete(:? int as i, _), Ptr(HeapLocation(address, _), _, shift)
                 | Ptr(HeapLocation(address, _), _, shift), Concrete(:? int as i, _) when i = 0 ->
-                    simplifyEqual address zeroAddress id &&& simplifyEqual shift (makeNumber 0) id |> k
+                    simplifyEqual address (zeroAddress()) id &&& simplifyEqual shift (makeNumber 0) id |> k
                 | Concrete(:? int as i, _), HeapRef(address, _)
-                | HeapRef(address, _), Concrete(:? int as i, _) when i = 0 -> simplifyEqual address zeroAddress k
+                | HeapRef(address, _), Concrete(:? int as i, _) when i = 0 -> simplifyEqual address (zeroAddress()) k
                 | Ref _, Ptr _
                 | Ptr _, Ref _ -> internalfail "comparison between ref and ptr is not implemented"
                 | HeapRef(address1, _), HeapRef(address2, _) -> simplifyEqual address1 address2 k
                 | Ptr(HeapLocation(addr, _), _, shift), HeapRef(term, _)
                 | HeapRef(term, _), Ptr(HeapLocation(addr, _), _, shift) ->
                     simplifyEqual addr term id &&& simplifyEqual shift (makeNumber 0) id |> k
-                | _ -> False |> k)
+                | _ -> False() |> k)
             (fun x y k -> simplifyReferenceEqualityk x y k)
 
     let isNull heapReference =
@@ -112,6 +112,10 @@ module internal Pointers =
             let baseAddress, offset = addressToBaseAndOffset address
             let ptr = Ptr baseAddress typ offset
             shift ptr bytesToShift |> k
+        | HeapRef(address, t) ->
+            assert(t.IsArray)
+            let ptrType = t.GetElementType().MakePointerType()
+            Ptr (HeapLocation(address, t)) ptrType bytesToShift |> k
         | _ -> internalfailf "address arithmetic: expected pointer, but got %O" ptr
 
     // NOTE: IL contains number (already in bytes) and pointer, that need to be shifted
@@ -153,6 +157,8 @@ module internal Pointers =
         match x.term, y.term with
         | Ptr(base1, _, offset1), Ptr(base2, _, offset2) when base1 = base2 ->
             sub offset1 offset2 |> k
+        | DetachedPtr offset1, DetachedPtr offset2 ->
+            sub offset1 offset2 |> k
         | Ptr(HeapLocation({term = ConcreteHeapAddress _}, _), _, _), Ptr(HeapLocation({term = ConcreteHeapAddress _}, _), _, _) ->
             undefinedBehaviour "trying to get pointer difference between different pointer bases"
         | _ -> __insufficientInformation__ "need more information about pointer address for pointer difference"
@@ -164,9 +170,21 @@ module internal Pointers =
             commonPointerSubtraction
 
     let private simplifyPointerSubtraction x y k =
-        if Terms.isNumeric y
-        then simplifyPointerAddition x (neg y) k
+        if Terms.isNumeric y then simplifyPointerAddition x (neg y) k
         else commonPointerSubtraction x y k
+
+    let private simplifyPointerComparison op x y k =
+        match x.term, y.term with
+        | Ptr(pointerBase1, _, offset1), Ptr(pointerBase2, _, offset2) when pointerBase1 = pointerBase2 ->
+            simplifyBinaryOperation op offset1 offset2 k
+        | Ptr(HeapLocation({term = ConcreteHeapAddress a1}, _), _, o1), Ptr(HeapLocation({term = ConcreteHeapAddress a2}, _), _, o2) ->
+            let base1 = convert (List.sum a1) typeof<int> |> makeNumber
+            let base2 = convert (List.sum a2) typeof<int> |> makeNumber
+            let number1 = add base1 o1
+            let number2 = add base2 o2
+            simplifyBinaryOperation op number1 number2 k
+        | _ ->
+            __notImplemented__()
 
     let simplifyBinaryOperation op x y k =
         match op with
@@ -180,6 +198,15 @@ module internal Pointers =
         | OperationType.NotEqual ->
             simplifyReferenceEqualityk x y (fun e ->
             simplifyNegation e k)
+        | OperationType.Less
+        | OperationType.Less_Un
+        | OperationType.LessOrEqual
+        | OperationType.LessOrEqual_Un
+        | OperationType.Greater
+        | OperationType.Greater_Un
+        | OperationType.GreaterOrEqual
+        | OperationType.GreaterOrEqual_Un ->
+            simplifyPointerComparison op x y k
         | _ -> internalfailf "%O is not a binary arithmetical operator" op
 
     let isPointerOperation op t1 t2 =
@@ -192,4 +219,12 @@ module internal Pointers =
         | OperationType.Subtract -> isRefOrPtr t1 && (isRefOrPtr t2 || isNumeric t2)
         | OperationType.Add -> isRefOrPtr t1 || isRefOrPtr t2
         | OperationType.Multiply -> isRefOrPtr t1 || isRefOrPtr t2
+        | OperationType.Less
+        | OperationType.Less_Un
+        | OperationType.LessOrEqual
+        | OperationType.LessOrEqual_Un
+        | OperationType.Greater
+        | OperationType.Greater_Un
+        | OperationType.GreaterOrEqual
+        | OperationType.GreaterOrEqual_Un -> isRefOrPtr t1 || isRefOrPtr t2
         | _ -> false

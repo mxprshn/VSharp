@@ -100,6 +100,10 @@ module SR =
         assert(List.length args = 0)
         Memory.AllocateString "ArgumentOutOfRange_Count" state
 
+    let internal get_ArgumentOutOfRange_StartIndex (state : state) (args : term list) : term =
+        assert(List.length args = 0)
+        Memory.AllocateString "get_ArgumentOutOfRange_StartIndex" state
+
     let internal get_ArgumentOutOfRange_SmallCapacity (state : state) (args : term list) : term =
         assert(List.length args = 0)
         Memory.AllocateString "get_ArgumentOutOfRange_SmallCapacity" state
@@ -119,3 +123,7 @@ module SR =
     let internal get_ArgumentOutOfRange_DecimalScale (state : state) (args : term list) : term =
         assert(List.length args = 0)
         Memory.AllocateString "ArgumentOutOfRange_DecimalScale" state
+        
+    let internal get_Arg_NotImplementedException (state : state) (args : term list) : term =
+        assert(List.length args = 0)
+        Memory.AllocateString "get_Arg_NotImplementedException" state

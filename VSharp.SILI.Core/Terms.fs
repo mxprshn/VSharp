@@ -160,9 +160,12 @@ type termNode =
             | HeapRef({term = Concrete(obj, AddressType)}, _) when (obj :?> int32 list) = [0] -> k "NullRef"
             | HeapRef(address, baseType) -> sprintf "(HeapRef %O to %O)" address baseType |> k
             | Ref address -> sprintf "(%sRef %O)" (address.Zone()) address |> k
-            | Ptr(address, typ, shift) ->
-                let offset = ", offset = " + shift.ToString()
-                sprintf "(%sPtr %O as %O%s)" (address.Zone()) address typ offset |> k
+            | Ptr(HeapLocation(address, _), typ, shift) ->
+                $"(HeapPtr {address} as {typ}, offset = {shift})" |> k
+            | Ptr(StackLocation loc, typ, shift) ->
+                $"(StackPtr {loc} as {typ}, offset = {shift})" |> k
+            | Ptr(StaticLocation t, typ, shift) ->
+                $"(StaticsPtr {t} as {typ}, offset = {shift})" |> k
             | Slice(term, slices) ->
                 let slices = List.map (fun (s, e, _) -> $"[{s} .. {e}]") slices |> join ", "
                 $"Slice({term}, {slices})" |> k
@@ -253,6 +256,7 @@ module HashMap =
                 let term = { term = node; hc = hc }
                 hashMap.Add(node, term)
                 term
+    let clear() = hashMap.Clear()
 
 [<AutoOpen>]
 module internal Terms =
@@ -261,7 +265,7 @@ module internal Terms =
 
 // --------------------------------------- Primitives ---------------------------------------
 
-    let Nop = HashMap.addTerm Nop
+    let Nop() = HashMap.addTerm Nop
     let Concrete obj typ = HashMap.addTerm (Concrete(obj, typ))
     let Constant name source typ = HashMap.addTerm (Constant({v=name}, source, typ))
     let Expression op args typ = HashMap.addTerm (Expression(op, args, typ))
@@ -339,23 +343,23 @@ module internal Terms =
         | StackBufferIndex _ -> typeof<int8>
         | PrimitiveStackLocation loc -> loc.TypeOfLocation
 
-    let typeOfRef =
-        let getTypeOfRef = term >> function
-            | HeapRef(_, t) -> t
-            | Ref address -> typeOfAddress address
-            | Ptr(_, sightType, _) -> sightType
-            | term -> internalfailf "expected reference, but got %O" term
-        commonTypeOf getTypeOfRef
-
     let sightTypeOfPtr =
         let getTypeOfPtr = term >> function
             | Ptr(_, typ, _) -> typ
             | term -> internalfailf "expected pointer, but got %O" term
         commonTypeOf getTypeOfPtr
 
-    let baseTypeOfPtr = typeOfRef
+    let rec typeOfRef term =
+        let getTypeOfRef term =
+            match term.term with
+            | HeapRef(_, t) -> t
+            | Ref address -> typeOfAddress address
+            | Ptr(_, sightType, _) -> sightType
+            | _ when typeOf term |> isNative -> typeof<byte>
+            | term -> internalfailf "expected reference, but got %O" term
+        commonTypeOf getTypeOfRef term
 
-    let typeOf =
+    and typeOf term =
         let getType term =
             match term.term with
             | Concrete(_, t)
@@ -366,7 +370,7 @@ module internal Terms =
             | Ref _ -> (typeOfRef term).MakeByRefType()
             | Ptr _ -> (sightTypeOfPtr term).MakePointerType()
             | _ -> internalfailf "getting type of unexpected term %O" term
-        commonTypeOf getType
+        commonTypeOf getType term
 
     let symbolicTypeToArrayType = function
         | ArrayType(elementType, dim) ->
@@ -414,14 +418,14 @@ module internal Terms =
         | Union gvs -> List.forall (snd >> isRefOrPtr) gvs
         | _ -> false
 
-    let zeroAddress =
+    let zeroAddress() =
         Concrete VectorTime.zero addressType
 
     let makeNumber n =
         Concrete n (n.GetType())
 
     let makeNullPtr typ =
-        Ptr (HeapLocation(zeroAddress, typ)) typ (makeNumber 0)
+        Ptr (HeapLocation(zeroAddress(), typ)) typ (makeNumber 0)
 
     // Only for concretes: there will never be null type
     let canCastConcrete (concrete : obj) targetType =
@@ -459,20 +463,20 @@ module internal Terms =
             let actualTypeName = Reflection.getFullTypeName actualType
             raise (InvalidCastException $"Cannot cast {actualTypeName} to {tName}!")
 
-    let True =
+    let True() =
         Concrete (box true) typeof<bool>
 
-    let False =
+    let False() =
         Concrete (box false) typeof<bool>
 
     let makeBool predicate =
-        if predicate then True else False
+        if predicate then True() else False()
 
     let makeIndex (i : int) =
         Concrete i indexType
 
     let nullRef t =
-        HeapRef zeroAddress t
+        HeapRef (zeroAddress()) t
 
     let makeBinary operation x y t =
         assert(Operations.isBinary operation)
@@ -501,10 +505,10 @@ module internal Terms =
     let rec private makeCast term fromType toType =
         match term, toType with
         | _ when fromType = toType -> term
-        | CastExpr(x, xType, Numeric t), Numeric dstType when not <| isLessForNumericTypes t dstType ->
+        | CastExpr(x, xType, Numeric t), Numeric toType when not <| isLessForNumericTypes t toType ->
             makeCast x xType toType
-        | CastExpr(x, (Numeric srcType as xType), Numeric t), Numeric dstType
-            when not <| isLessForNumericTypes t srcType && not <| isLessForNumericTypes dstType t ->
+        | CastExpr(x, Numeric xType, Numeric t), Numeric toType
+            when not <| isLessForNumericTypes t xType && not <| isLessForNumericTypes toType t ->
             makeCast x xType toType
         | _ -> Expression (Cast(fromType, toType)) [term] toType
 
@@ -515,7 +519,7 @@ module internal Terms =
         | _, ByRef t ->
             makeDetachedPtr term t
         | Concrete(value, _), _ -> castConcrete value targetType
-        | Combined(slices, t), _ when isIntegralOrEnum t && isIntegralOrEnum targetType && internalSizeOf t = internalSizeOf targetType ->
+        | Combined(slices, t), _ when isIntegral t && isIntegral targetType && internalSizeOf t = internalSizeOf targetType ->
             // TODO: simplify for narrow cast
             combine slices targetType
         // TODO: make cast to Bool like function Transform2BooleanTerm
@@ -531,10 +535,10 @@ module internal Terms =
         | _ when isRefOrPtr value -> value
         | _ ->
             let offset = primitiveCast value typeof<int>
-            Ptr (HeapLocation(zeroAddress, typeof<Void>)) t offset
+            Ptr (HeapLocation(zeroAddress(), typeof<Void>)) t offset
 
     and (|DetachedPtr|_|) = function
-        | Ptr(HeapLocation(address, _), _, offset) when address = zeroAddress ->
+        | Ptr(HeapLocation(address, _), _, offset) when address = zeroAddress() ->
             Some(DetachedPtr offset)
         | _ -> None
 
@@ -753,7 +757,8 @@ module internal Terms =
     and reinterpretConcretes (sliceTerms : term list) t =
         let bytes : byte array = internalSizeOf t |> Array.zeroCreate
         let combineLength = Array.length bytes
-        let mutable solidPart = Nop
+        let mutable solidPartBytes = Array.empty
+        let mutable solidPartSize = 0
         for slice in sliceTerms do
             match slice.term with
             | Slice(term, [{term = Concrete(s, _)}, {term = Concrete(e, _)}, {term = Concrete(pos, _)}]) ->
@@ -769,22 +774,24 @@ module internal Terms =
                 let count = e - s
                 assert(count > 0)
                 Array.blit sliceBytes s bytes pos count
-            | Concrete(o, _) when solidPart = Nop ->
-                solidPart <- slice
+            | Concrete(o, _) ->
                 let sliceBytes = concreteToBytes o
                 let sliceSize = Array.length sliceBytes
-                assert(sliceSize <= combineLength)
-                Array.blit sliceBytes 0 bytes 0 sliceSize
-            | Concrete _ ->
-                assert(solidPart = slice)
-            | _ -> internalfailf "expected concrete slice, but got %O" slice
+                if not (solidPartBytes = sliceBytes) then
+                    let intersectingEnd = (min sliceSize solidPartSize) - 1
+                    assert(Array.isEmpty solidPartBytes || sliceBytes[0..intersectingEnd] = solidPartBytes[0..intersectingEnd])
+                    assert(sliceSize <= combineLength)
+                    Array.blit sliceBytes 0 bytes 0 sliceSize
+                    solidPartBytes <- sliceBytes
+                    solidPartSize <- sliceSize
+            | _ -> internalfailf $"Expected concrete slice, but got {slice}"
         bytesToObj bytes t
 
     and private slicingTerm term =
         match term with
         | {term = Concrete(o, _)} -> o
         | CombinedTerm(slices, t) -> reinterpretConcretes slices t
-        | _ -> internalfail "getting slicing term: unexpected term %O" term
+        | _ -> internalfail $"Getting slicing term: unexpected term {term}"
 
     and private allSlicesAreConcrete slices =
         let rec sliceIsConcrete t =
@@ -861,7 +868,7 @@ module internal Terms =
             let combineSize = lazy (internalSizeOf t)
             if s = 0 && pos = 0 then
                 if e = termSize.Value && isSolid p typ then p
-                elif combineSize.Value <= termSize.Value && e = combineSize.Value && isIntegralOrEnum typ && isIntegralOrEnum t then
+                elif combineSize.Value <= termSize.Value && e = combineSize.Value && isIntegral typ && isIntegral t then
                     primitiveCast p t
                 else defaultCase()
             else defaultCase()
@@ -985,7 +992,7 @@ module internal Terms =
 
     let rec makeDefaultValue typ =
         match typ with
-        | Bool -> False
+        | Bool -> False()
         | Numeric t when t.IsEnum -> castConcrete (getEnumDefaultValue t) t
         // NOTE: XML serializer does not support special char symbols, so creating test with char > 32 #XMLChar
         // TODO: change serializer
@@ -1001,5 +1008,5 @@ module internal Terms =
         | TypeVariable t -> __insufficientInformation__ "Cannot instantiate value of undefined type %O" t
         | StructType _ -> makeStruct false (fun _ _ t -> makeDefaultValue t) typ
         | Pointer typ -> makeNullPtr typ
-        | AddressType -> zeroAddress
+        | AddressType -> zeroAddress()
         | _ -> __notImplemented__()

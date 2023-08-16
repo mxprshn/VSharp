@@ -75,14 +75,14 @@ module internal Memory =
         List.mapFold detachOne (ind, lens) lbs |> fst
 
     let linearizeArrayIndex (lens : term list) (lbs : term list) (indices : term list) =
-        let length = List.length indices
+        let length = List.length indices - 1
         let attachOne acc i =
-            let relOffset = sub indices.[i] lbs.[i]
-            let prod acc j = mul acc lens.[j]
+            let relOffset = sub indices[i] lbs[i]
+            let prod acc j = mul acc lens[j]
             let lensProd = List.fold prod (makeNumber 1) [i .. length - 1]
             let absOffset = mul relOffset lensProd
             add acc absOffset
-        List.fold attachOne (makeNumber 0) [0 .. length - 1]
+        List.fold attachOne (makeNumber 0) [0 .. length]
 
     let isModelState state =
         VectorTime.less state.startingTime VectorTime.zero
@@ -502,8 +502,8 @@ module internal Memory =
         let nullableType = Nullable.GetUnderlyingType t
         let valueField, hasValueField = Reflection.fieldsOfNullable t
         let value, hasValue =
-            if box obj <> null then objToTerm state nullableType obj, True
-            else objToTerm state nullableType (Reflection.createObject nullableType), False
+            if box obj <> null then objToTerm state nullableType obj, True()
+            else objToTerm state nullableType (Reflection.createObject nullableType), False()
         let fields = PersistentDict.ofSeq <| seq [(valueField, value); (hasValueField, hasValue)]
         Struct fields t
 
@@ -551,8 +551,8 @@ module internal Memory =
         let value = PersistentDict.find fields valueField
         let hasValue = PersistentDict.find fields hasValueField
         match tryTermToObj state value with
-        | Some obj when hasValue = True -> Some obj
-        | _ when hasValue = False -> Some null
+        | Some obj when hasValue = True() -> Some obj
+        | _ when hasValue = False() -> Some null
         | _ -> None
 
     // ------------------------------- Merging -------------------------------
@@ -617,11 +617,6 @@ module internal Memory =
             if s.complete then makeDefaultValue typ
             else makeSymbolicStackRead key typ s.startingTime
         CallStack.readStackLocation s.stack key makeSymbolic
-
-    let readStruct (structTerm : term) (field : fieldId) =
-        match structTerm with
-        | { term = Struct(fields, _) } -> fields.[field]
-        | _ -> internalfailf "Reading field of structure: expected struct, but got %O" structTerm
 
     let private readLowerBoundSymbolic (state : state) address dimension arrayType =
         let extractor (state : state) = accessRegion state.lowerBounds (substituteTypeVariablesIntoArrayType state arrayType) lengthType
@@ -807,7 +802,13 @@ module internal Memory =
             if delegates.Length = gvs.Length then delegates |> Merging.merge |> Some else None
         | _ -> internalfailf "Reading delegate: expected heap reference, but got %O" reference
 
-    let rec private readSafe state = function
+    let rec readStruct (structTerm : term) (field : fieldId) =
+        match structTerm.term with
+        | Struct(fields, _) -> fields[field]
+        | Combined _ -> readFieldUnsafe structTerm field
+        | _ -> internalfailf "Reading field of structure: expected struct, but got %O" structTerm
+
+    and private readSafe state = function
         | PrimitiveStackLocation key -> readStackLocation state key
         | ClassField(address, field) -> readClassField state address field
         // [NOTE] ref must be the most concrete, otherwise region will be not found
@@ -823,21 +824,22 @@ module internal Memory =
 
 // ------------------------------- Unsafe reading -------------------------------
 
-    let private checkBlockBounds state reportError blockSize startByte endByte =
-        let failCondition = simplifyGreater endByte blockSize id ||| simplifyLess startByte (makeNumber 0) id
-        // NOTE: disables overflow in solver
-        let noOvf = makeExpressionNoOvf failCondition
-        // TODO: move noOvf to failCondition (failCondition = failCondition || !noOvf)
-        state.pc <- PC.add state.pc noOvf
+    and private checkBlockBounds state reportError blockSize startByte endByte =
+        let zero = makeNumber 0
+        let failCondition =
+            simplifyLess startByte zero id
+            ||| simplifyGreaterOrEqual startByte blockSize id
+            ||| simplifyLessOrEqual endByte zero id
+            ||| simplifyGreater endByte blockSize id
         reportError state failCondition
 
-    let private readAddressUnsafe address startByte endByte =
+    and private readAddressUnsafe address startByte endByte =
         let size = sizeOf address
         match startByte.term, endByte.term with
         | Concrete(:? int as s, _), Concrete(:? int as e, _) when s = 0 && size = e -> List.singleton address
         | _ -> $"Reading: reinterpreting {address}" |> undefinedBehaviour
 
-    let sliceTerm term startByte endByte pos stablePos =
+    and sliceTerm term startByte endByte pos stablePos =
         match term.term with
         | Slice(term, cuts) when stablePos ->
             assert(List.isEmpty cuts |> not)
@@ -851,7 +853,7 @@ module internal Memory =
 
     // NOTE: returns list of slices
     // TODO: return empty if every slice is invalid
-    let rec private commonReadTermUnsafe term startByte endByte pos stablePos =
+    and private commonReadTermUnsafe term startByte endByte pos stablePos =
         match term.term with
         | Struct(fields, t) -> commonReadStructUnsafe fields t startByte endByte pos stablePos
         | HeapRef _
@@ -929,18 +931,18 @@ module internal Memory =
     // TODO: 1. when reading info between fields
     // TODO: 3. when reading info outside block
     // TODO: 3. reinterpreting ref or ptr should return symbolic ref or ptr
-    let private readClassUnsafe state reportError address classType offset (viewSize : int) =
+    and private readClassUnsafe state reportError address classType offset (viewSize : int) =
         let endByte = makeNumber viewSize |> add offset
         let readField fieldId = readClassField state address fieldId
         readFieldsUnsafe state reportError readField false classType offset endByte
 
-    let arrayIndicesToOffset state address (elementType, dim, _ as arrayType) indices =
+    and arrayIndicesToOffset state address (elementType, dim, _ as arrayType) indices =
         let lens = List.init dim (fun dim -> readLength state address (makeNumber dim) arrayType)
         let lbs = List.init dim (fun dim -> readLowerBound state address (makeNumber dim) arrayType)
         let linearIndex = linearizeArrayIndex lens lbs indices
         mul linearIndex (internalSizeOf elementType |> makeNumber)
 
-    let private getAffectedIndices state reportError address (elementType, dim, _ as arrayType) offset viewSize =
+    and private getAffectedIndices state reportError address (elementType, dim, _ as arrayType) offset viewSize =
         let concreteElementSize = internalSizeOf elementType
         let elementSize = makeNumber concreteElementSize
         let lens = List.init dim (fun dim -> readLength state address (makeNumber dim) arrayType)
@@ -963,28 +965,28 @@ module internal Memory =
             (indices, element, startByte, endByte), add currentOffset elementSize
         List.mapFold getElement (mul firstElement elementSize) [0 .. countToRead - 1] |> fst
 
-    let private readArrayUnsafe state reportError address arrayType offset viewSize =
+    and private readArrayUnsafe state reportError address arrayType offset viewSize =
         let indices = getAffectedIndices state reportError address (symbolicTypeToArrayType arrayType) offset viewSize
         List.collect (fun (_, elem, s, e) -> readTermUnsafe elem s e) indices
 
-    let private readStringUnsafe state reportError address offset viewSize =
+    and private readStringUnsafe state reportError address offset viewSize =
          // TODO: handle case, when reading string length
         let indices = getAffectedIndices state reportError address (typeof<char>, 1, true) offset viewSize
         List.collect (fun (_, elem, s, e) -> readTermUnsafe elem s e) indices
 
-    let private readStaticUnsafe state reportError t offset (viewSize : int) =
+    and private readStaticUnsafe state reportError t offset (viewSize : int) =
         let endByte = makeNumber viewSize |> add offset
         let readField fieldId = readStaticField state t fieldId
         readFieldsUnsafe state reportError readField true t offset endByte
 
-    let private readStackUnsafe state reportError loc offset (viewSize : int) =
+    and private readStackUnsafe state reportError loc offset (viewSize : int) =
         let term = readStackLocation state loc
         let locSize = sizeOf term |> makeNumber
         let endByte = makeNumber viewSize |> add offset
         checkBlockBounds state reportError locSize offset endByte
         readTermUnsafe term offset endByte
 
-    let private readBoxedUnsafe state loc typ offset viewSize =
+    and private readBoxedUnsafe state loc typ offset viewSize =
         let address = BoxedLocation(loc, typ)
         let endByte = makeNumber viewSize |> add offset
         match readSafe state address with
@@ -992,7 +994,7 @@ module internal Memory =
         | term when isPrimitive typ || typ.IsEnum -> readTermUnsafe term offset endByte
         | term -> internalfail $"readUnsafe: reading struct resulted in term {term}"
 
-    let private readUnsafe state reportError baseAddress offset sightType =
+    and private readUnsafe state reportError baseAddress offset sightType =
         let viewSize = internalSizeOf sightType
         let slices =
             match baseAddress with
@@ -1010,8 +1012,8 @@ module internal Memory =
             | StaticLocation loc -> readStaticUnsafe state reportError loc offset viewSize
         combine slices sightType
 
-    let readFieldUnsafe block (field : fieldId) =
-        assert(typeOf block = field.declaringType)
+    and readFieldUnsafe block (field : fieldId) =
+        assert(sizeOf block = internalSizeOf field.declaringType)
         let fieldType = field.typ
         let startByte = Reflection.getFieldIdOffset field
         let endByte = startByte + internalSizeOf fieldType
@@ -1024,7 +1026,7 @@ module internal Memory =
         let key : symbolicTypeKey = {typ=typ}
         let matchingTypes = SymbolicSet.matchingElements key state.initializedTypes
         match matchingTypes with
-        | [x] when x = key -> True
+        | [x] when x = key -> True()
         | _ ->
             let name = sprintf "%O_initialized" typ
             let source : typeInitialized = {typ = typ; matchingTypes = SymbolicSet.ofSeq matchingTypes}
@@ -1086,7 +1088,10 @@ module internal Memory =
 
     let writeStaticField state typ (field : fieldId) value =
         ensureConcreteType field.typ
-        let mr = accessRegion state.staticFields field field.typ
+        let fieldType =
+            if isImplementationDetails typ then typeof<byte>.MakeArrayType()
+            else field.typ
+        let mr = accessRegion state.staticFields field fieldType
         let key = {typ = typ}
         let mr' = MemoryRegion.write mr key value
         state.staticFields <- PersistentDict.add field mr' state.staticFields
@@ -1567,7 +1572,7 @@ module internal Memory =
                         let effect = MemoryRegion.map substTerm substType substTime x.memoryObject
                         let before = x.picker.extract state
                         MemoryRegion.compose before effect
-                    else List.singleton (True, x.memoryObject)
+                    else List.singleton (True(), x.memoryObject)
                 let read region =
                     let inst = makeArraySymbolicHeapRead state x.picker key state.startingTime
                     MemoryRegion.read region key (x.picker.isDefaultKey state) inst
@@ -1595,7 +1600,7 @@ module internal Memory =
                     let x = x :> ISymbolicConstantSource
                     match state.model with
                     | PrimitiveModel subst when state.complete ->
-                        let value = ref Nop
+                        let value = ref (Nop())
                         if subst.TryGetValue(x, value) then value.Value
                         else makeDefaultValue x.TypeOfLocation
                     | _ ->
@@ -1611,7 +1616,7 @@ module internal Memory =
                     | src ->
                         match state.model with
                         | PrimitiveModel subst when state.complete ->
-                            let value = ref Nop
+                            let value = ref (Nop())
                             if subst.TryGetValue(x, value) then value.Value
                             else makeDefaultValue src.TypeOfLocation
                         | _ ->
@@ -1660,7 +1665,7 @@ module internal Memory =
             }
         dict'
             |> PersistentDict.map id (MemoryRegion.map substTerm substType substTime)
-            |> PersistentDict.fold composeOneRegion [(True, dict)]
+            |> PersistentDict.fold composeOneRegion [(True(), dict)]
 
     let private composeTypeVariablesOf state state' =
         let ms, s = state.typeVariables

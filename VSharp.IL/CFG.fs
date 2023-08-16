@@ -28,7 +28,7 @@ type ICfgNode =
 [<Struct>]
 type internal temporaryCallInfo = {callee: MethodWithBody; callFrom: offset; returnTo: offset}
 
-type BasicBlock (method: MethodWithBody, startOffset: offset) as this =
+type BasicBlock (method: MethodWithBody, startOffset: offset) =
     let mutable finalOffset = startOffset
     let mutable startOffset = startOffset
     let mutable isGoal = false
@@ -415,6 +415,14 @@ and Method internal (m : MethodBase) as this =
             res <- distToNode
         else res <- value
         res
+
+    member x.InstrsToString() =
+        let mutable sb = System.Text.StringBuilder()
+        for b in x.BasicBlocks do
+            for instr in b.ToString() do
+                sb <- sb.AppendLine(instr)
+            sb <- sb.AppendLine()
+        sb.ToString()
 
 and
     [<CustomEquality; CustomComparison>]

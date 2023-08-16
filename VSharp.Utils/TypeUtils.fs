@@ -28,6 +28,8 @@ module TypeUtils =
             ]
         )
 
+    let private longTypes = HashSet<Type>([typedefof<int64>; typedefof<uint64>])
+
     let private unsignedTypes =
         HashSet<Type>(
             [typedefof<byte>; typedefof<uint16>; typedefof<uint32>; typedefof<uint64>; typeof<UIntPtr>]
@@ -57,11 +59,12 @@ module TypeUtils =
         (not x.IsGenericType && not x.IsGenericParameter) || x.IsConstructedGenericType
 
     let isNumeric x = numericTypes.Contains x || x.IsEnum
-    let isIntegral = integralTypes.Contains
-    let isIntegralOrEnum x = integralTypes.Contains x || x.IsEnum
+    let isIntegral x = integralTypes.Contains x || x.IsEnum
+    let isLongTypes = longTypes.Contains
     let isReal = realTypes.Contains
     let isUnsigned = unsignedTypes.Contains
     let isPrimitive = primitiveTypes.Contains
+    let isNative x = x = typeof<IntPtr> || x = typeof<UIntPtr>
 
     // returns true, if at least one constraint on type parameter "t" implies that "t" is reference type (for example, "t : class" case)
     // returns false, if "t" is value type or if we have no information about "t" type from constraints
@@ -130,6 +133,9 @@ module TypeUtils =
 
     let isDelegate typ = typeof<Delegate>.IsAssignableFrom typ
 
+    let isImplementationDetails (t : Type) =
+        t.FullName = "<PrivateImplementationDetails>"
+
     // ---------------------------------- Basic type operations ----------------------------------
 
     let inline getTypeOfConcrete value =
@@ -141,7 +147,7 @@ module TypeUtils =
     let private sizeOfs = Dictionary<Type, sizeOfType>()
 
     let private createSizeOf (typ : Type) =
-        assert(not typ.ContainsGenericParameters)
+        assert(not typ.ContainsGenericParameters && typ <> typeof<Void>)
         let m = DynamicMethod("GetManagedSizeImpl", typeof<uint32>, null);
         let gen = m.GetILGenerator()
         gen.Emit(OpCodes.Sizeof, typ)
@@ -349,6 +355,15 @@ module TypeUtils =
                 yield! getBaseInterfaces b
         }
 
+    // [NOTE] there is no enums, because pushing to evaluation stack causes cast
+    let signedToUnsigned = function
+        | typ when typ = typeof<int32> || typ = typeof<uint32> -> typeof<uint32>
+        | typ when typ = typeof<int8> || typ = typeof<uint8> -> typeof<uint8>
+        | typ when typ = typeof<int16> || typ = typeof<uint16> -> typeof<uint16>
+        | typ when typ = typeof<int64> || typ = typeof<uint64> -> typeof<uint64>
+        | typ when typ = typeof<IntPtr> || typ = typeof<UIntPtr> -> typeof<UIntPtr>
+        | typ -> internalfail $"signedToUnsigned: unexpected type {typ}"
+
     // --------------------------------------- Conversions ---------------------------------------
 
     let canConvert leftType rightType =
@@ -506,11 +521,7 @@ module TypeUtils =
 
     let deduceShiftTargetType x y =
         let fail() = failDeduceBinaryTargetType "{<<, >>}" x y
-        if not <| isInt y then fail()                               // DO NOT REORDER THESE elif's!
+        if not <| isInt y then fail() // DO NOT REORDER THESE elif's!
         elif isInt x || isUInt x || isLong x || isULong x then x
         elif isIntegral x then typeof<int32>
         else fail()
-
-    let isBuiltInType (t: Type) =
-        let builtInAssembly = typeof<int>.Assembly
-        t.Assembly = builtInAssembly

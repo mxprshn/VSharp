@@ -18,7 +18,7 @@ module internal SystemArray =
     let get_Length state args =
         assert(List.length args = 1)
         let getLengthFromRank arrayRef =
-            let rank = Terms.MostConcreteTypeOfHeapRef state arrayRef |> Types.RankOf
+            let rank = Terms.MostConcreteTypeOfRef state arrayRef |> Types.RankOf
             assert (rank >= 1)
             let lengths = List.init rank (MakeNumber >> Memory.ArrayLengthByDimension state arrayRef)
             match lengths with
@@ -41,7 +41,7 @@ module internal SystemArray =
             | Concrete(obj, _) ->
                 let length = obj :?> int
                 let indices = List.init length id
-                List.fold checkOneElement False indices
+                List.fold checkOneElement (False()) indices
             | _ -> __unreachable__()
         | _ -> __insufficientInformation__ "Contains works only for concrete address arrays"
 
