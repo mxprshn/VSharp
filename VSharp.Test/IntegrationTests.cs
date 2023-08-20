@@ -279,6 +279,7 @@ namespace VSharp.Test
                     );
                 }
 
+                // Is it needed?
                 Core.API.ConfigureSolver(SolverPool.mkSolver(_timeout / 2 * 1000));
                 var originMethodInfo = innerCommand.Test.Method.MethodInfo;
                 var exploredMethodInfo = (MethodInfo) AssemblyManager.NormalizeMethod(originMethodInfo);

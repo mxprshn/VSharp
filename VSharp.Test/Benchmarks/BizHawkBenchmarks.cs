@@ -22,7 +22,7 @@ public class BizhawkBenchmarks
                 renderAndBuildTests: true
             )
         );
-        var coverage = Benchmarks.GetMethodCoverage(_method, statistics);
+        var coverage = Benchmarks.GetMethodCoverage(_method, statistics.OutputDir);
         TestContext.Out.WriteLine($"Coverage: {coverage}%");
     }
 }

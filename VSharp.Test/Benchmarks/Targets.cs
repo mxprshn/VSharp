@@ -74,6 +74,12 @@ internal static class Targets
         return new(type.GetMethods(AllFlags).First(m => m.MetadataToken == methodToken));
     }
 
+    private static IEnumerable<BenchmarkTarget> GetTargetsForAllMethods(this Assembly assembly, int typeToken)
+    {
+        var type = assembly.Modules.First().ResolveType(typeToken);
+        return type.GetTargetsForAllMethods();
+    }
+
     private static IEnumerable<BenchmarkTarget> GetTargetsForAllMethods(this Type type)
     {
         foreach (var m in type.GetMethods(AllFlags).Where(m => CheckMethod(type, m)))
@@ -95,6 +101,7 @@ internal static class Targets
     private static Assembly Lifetimes() => LoadBenchmarkAssembly("jb_lifetimes", "JetBrains.Lifetimes");
     private static Assembly BizHawkCores() => LoadBenchmarkAssembly("bizhawk", "BizHawk.Emulation.Cores");
     private static Assembly UnityCollections() => LoadBenchmarkAssembly("unity_collections", "Unity.Collections");
+    private static Assembly UnityHighDefinition() => LoadBenchmarkAssembly("unity_hd", "Unity.RenderPipelines.HighDefinition");
 
     internal static class BizHawk
     {
@@ -107,6 +114,13 @@ internal static class Targets
         internal static class Collections
         {
             public static IEnumerable<BenchmarkTarget> All => UnityCollections().GetTargetsForAllMethods();
+            public static BenchmarkTarget Hash64Internal => UnityCollections().GetTargetByToken(0x2000089, 0x600085C);
+            public static BenchmarkTarget Hash128Internal => UnityCollections().GetTargetByToken(0x2000089, 0x600085C);
+        }
+
+        internal static class HighDefinition
+        {
+            public static IEnumerable<BenchmarkTarget> HlslTree => UnityHighDefinition().GetTargetsForAllMethods(0x200001B);
         }
     }
 

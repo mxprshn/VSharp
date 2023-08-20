@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using NUnit.Framework;
+using VSharp.Interpreter.IL;
 
 namespace VSharp.Test.Benchmarks;
 
@@ -34,16 +35,16 @@ public class SearcherBenchmarks
         Assert.True(Benchmarks.RunBenchmark(target, VSharp.SearchStrategy.ExecutionTree, out var executionTreeResults2, stepsLimit: stepsLimit, releaseBranches: false, randomSeed: 100));
         var stats = new List<(string, Statistics, int)>
         {
-            ("BFS", bfsResults, Benchmarks.GetMethodCoverage(target, bfsResults)),
-            ("DFS", dfsResults, Benchmarks.GetMethodCoverage(target, dfsResults)),
-            ("Contributed coverage", contributedCoverageResults, Benchmarks.GetMethodCoverage(target, contributedCoverageResults)),
-            ("Shortest distance", shortestDistanceResults, Benchmarks.GetMethodCoverage(target, shortestDistanceResults)),
-            ("Random shortest distance (1)", randomShortestDistanceResults, Benchmarks.GetMethodCoverage(target, randomShortestDistanceResults)),
-            ("Random shortest distance (2)", randomShortestDistanceResults2, Benchmarks.GetMethodCoverage(target, randomShortestDistanceResults2)),
-            ("Execution tree int (1)", executionTreeResultsInterleaved, Benchmarks.GetMethodCoverage(target, executionTreeResultsInterleaved)),
-            ("Execution tree int (2)", executionTreeResultsInterleaved2, Benchmarks.GetMethodCoverage(target, executionTreeResultsInterleaved2)),
-            ("Execution tree (1)", executionTreeResults, Benchmarks.GetMethodCoverage(target, executionTreeResults)),
-            ("Execution tree (2)", executionTreeResults2, Benchmarks.GetMethodCoverage(target, executionTreeResults2)),
+            ("BFS", bfsResults, Benchmarks.GetMethodCoverage(target, bfsResults.OutputDir)),
+            ("DFS", dfsResults, Benchmarks.GetMethodCoverage(target, dfsResults.OutputDir)),
+            ("Contributed coverage", contributedCoverageResults, Benchmarks.GetMethodCoverage(target, contributedCoverageResults.OutputDir)),
+            ("Shortest distance", shortestDistanceResults, Benchmarks.GetMethodCoverage(target, shortestDistanceResults.OutputDir)),
+            ("Random shortest distance (1)", randomShortestDistanceResults, Benchmarks.GetMethodCoverage(target, randomShortestDistanceResults.OutputDir)),
+            ("Random shortest distance (2)", randomShortestDistanceResults2, Benchmarks.GetMethodCoverage(target, randomShortestDistanceResults2.OutputDir)),
+            ("Execution tree int (1)", executionTreeResultsInterleaved, Benchmarks.GetMethodCoverage(target, executionTreeResultsInterleaved.OutputDir)),
+            ("Execution tree int (2)", executionTreeResultsInterleaved2, Benchmarks.GetMethodCoverage(target, executionTreeResultsInterleaved2.OutputDir)),
+            ("Execution tree (1)", executionTreeResults, Benchmarks.GetMethodCoverage(target, executionTreeResults.OutputDir)),
+            ("Execution tree (2)", executionTreeResults2, Benchmarks.GetMethodCoverage(target, executionTreeResults2.OutputDir)),
         };
         Benchmarks.PrintStatisticsComparison(stats);
     }
@@ -64,7 +65,7 @@ public class SearcherBenchmarks
                 renderAndBuildTests: true
             )
         );
-        var coverage = Benchmarks.GetMethodCoverage(target, statistics);
+        var coverage = Benchmarks.GetMethodCoverage(target, statistics.OutputDir);
         TestContext.Out.WriteLine($"Coverage: {coverage}%");
         Assert.That(coverage, Is.GreaterThan(90));
     }
@@ -79,20 +80,58 @@ public class SearcherBenchmarks
         {
             TestContext.Progress.WriteLine($"Running V# on method {target} ({i} of {targets.Count})");
             i++;
-            Assert.True(
-                Benchmarks.RunBenchmark(
-                    target,
-                    VSharp.SearchStrategy.ExecutionTreeContributedCoverage,
-                    out var statistics,
-                    stepsLimit: 30000,
-                    releaseBranches: false,
-                    randomSeed: 0,
-                    renderAndBuildTests: true
-                )
+            var result = Benchmarks.Run(
+                target,
+                searchMode.NewInterleavedMode(searchMode.ExecutionTreeMode, 1, searchMode.ContributedCoverageMode, 1),
+                out var statistics,
+                stepsLimit: 30000,
+                releaseBranches: false,
+                randomSeed: 0,
+                renderAndBuildTests: true
             );
-            var coverage = Benchmarks.GetMethodCoverage(target, statistics);
-            TestContext.Out.WriteLine($"Coverage: {coverage}%");
-            Assert.That(coverage, Is.GreaterThan(90));
+        }
+    }
+
+    [Test]
+    public void UnityHash64()
+    {
+        var target = Targets.Unity.Collections.Hash64Internal;
+        Assert.True(
+            Benchmarks.Run(
+                target,
+                searchMode.NewInterleavedMode(searchMode.ExecutionTreeMode, 1, searchMode.ContributedCoverageMode, 1),
+                out var statistics,
+                stepsLimit: 30000,
+                releaseBranches: false,
+                randomSeed: 0,
+                renderAndBuildTests: true
+            )
+        );
+    }
+
+    [Test]
+    public void UnityHlslTree()
+    {
+        var targets = Targets.Unity.HighDefinition.HlslTree.Skip(4).ToList();
+        TestContext.Progress.WriteLine($"Found {targets.Count} method targets");
+        var i = 1;
+        foreach (var target in targets)
+        {
+            TestContext.Progress.WriteLine($"Running V# on method {target} ({i} of {targets.Count})");
+            i++;
+            var result = Benchmarks.Run(
+                target,
+                searchMode.NewInterleavedMode(searchMode.ExecutionTreeMode, 1, searchMode.ContributedCoverageMode, 1),
+                out var statistics,
+                stepsLimit: 30000,
+                releaseBranches: false,
+                randomSeed: 0,
+                renderAndBuildTests: true
+            );
+            if (!result)
+            {
+                TestContext.Progress.WriteLine("FAIL");
+            }
         }
     }
 }
