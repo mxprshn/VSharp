@@ -112,15 +112,24 @@ module TestGenerator =
                         List.head i < lengths[0])
                 else
                     List.toSeq >> Seq.zip3 lowerBounds lengths >> Seq.forall (fun (lb, l, i) -> i >= lb && i < lb + l)
-            let arrays =
+            // TODO: move resolving to some model interface
+            let arrayRegion =
                 if VectorTime.less cha VectorTime.zero then
                     match model with
-                    | StateModel(modelState, _) -> modelState.arrays
+                    | StateModel(modelState, _) ->
+                        match PersistentDict.tryFind modelState.arrays arrayType with
+                        | Some _ as region -> region
+                        | None ->
+                            match modelState.model with
+                            | StateModel(internalModel, _) ->
+                                PersistentDict.tryFind internalModel.arrays arrayType
+                            | _ -> None
                     | _ -> __unreachable__()
                 else
-                    state.arrays
+                    PersistentDict.tryFind state.arrays arrayType
+
             let defaultValue, indices, values =
-                match PersistentDict.tryFind arrays arrayType with
+                match arrayRegion with
                 | Some region ->
                     let defaultValue =
                         match region.defaultValue with
@@ -221,13 +230,36 @@ module TestGenerator =
     and private address2obj (model : model) state cache (test : UnitTest) (methodSequenceObjRef : obj) (address : concreteHeapAddress) : obj =
         let term2obj = term2obj model state cache test
         match address with
+        // TODO: move to function
         | _ when VectorTime.less address state.startingTime ->
             match model with
             | StateModel(modelState, _) ->
-                match PersistentDict.tryFind modelState.allocatedTypes address with
+                let allocatedType =
+                    match PersistentDict.tryFind modelState.allocatedTypes address with
+                    | Some _ as res -> res
+                    | None ->
+                        match modelState.model with
+                        | StateModel(state, _) ->
+                            PersistentDict.tryFind state.allocatedTypes address
+                        | _ -> None
+                match allocatedType with
                 | Some typ ->
                     let eval address =
-                        address |> Ref |> Memory.Read modelState |> model.Complete |> term2obj null
+                        let stateToRead =
+                            match modelState.model with
+                            | StateModel(internalModel, _) ->
+                                match address with
+                                // TODO: rough workaround, think about encapsulating this logic into model
+                                | ArrayIndex({ term = ConcreteHeapAddress arrayAddr }, _, _)
+                                | ArrayLowerBound({ term = ConcreteHeapAddress arrayAddr }, _, _)
+                                | ArrayLength({ term = ConcreteHeapAddress arrayAddr }, _, _) when PersistentDict.contains arrayAddr internalModel.allocatedTypes ->
+                                    internalModel
+                                | ClassField({ term = ConcreteHeapAddress arrayAddr }, fld) when Reflection.stringLengthField = fld && PersistentDict.contains arrayAddr internalModel.allocatedTypes ->
+                                    internalModel
+                                | _ -> modelState
+                            | _ ->
+                                modelState
+                        address |> Ref |> Memory.Read stateToRead |> model.Complete |> term2obj null
                     let arr2Obj = encodeArrayCompactly state model (term2obj null)
                     let encodeMock = encodeTypeMock model state cache test
                     obj2test eval arr2Obj cache encodeMock test address typ methodSequenceObjRef

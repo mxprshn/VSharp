@@ -138,43 +138,70 @@ type internal MethodSequenceSearcher(maxSequenceLength : uint, backwardExplorerF
             thisId, PersistentDict.ofSeq (args |> Seq.indexed |> Seq.choose mapArgument)
         | CreateDefaultStruct _ -> __unreachable__()
 
+    // Assuming that addresses in sequenceStorage and targetStorage AddressesTypes are disjoint
+    let typeStoragesUnion (sequenceState : state) (targetState : state) =
+        let sequenceStorage = sequenceState.typeStorage
+        let targetStorage = targetState.typeStorage
+        let union = targetStorage.Copy()
+        for KeyValue(address, constraints) in targetStorage.Constraints do
+            match address with
+            | { term = Constant(_, HeapAddressSource(StackReading(key)), _) } ->
+                match key with
+                | ParameterKey pi ->
+                    match Memory.ReadArgument sequenceState pi with
+                    | { term = HeapRef(sequenceAddress , _) } ->
+                        union.AddConstraint sequenceAddress constraints
+                    | _ -> ()
+                | _ -> ()
+            | _ -> ()
+        for KeyValue(address, constraints) in sequenceStorage.Constraints do
+            union.AddConstraint address constraints
+        for KeyValue(address, candidates) in sequenceStorage.AddressesTypes do
+            assert(not <| union.AddressesTypes.ContainsKey address)
+            let changeMock _ =
+                // TODO: handle case when there are mocks in sequence
+                __notImplemented__()
+            let candidatesCopy = candidates.Copy changeMock
+            union.AddressesTypes.Add(address, candidatesCopy)
+        union
+
+    let statesUnion (sequenceState : state) (targetState : state) =
+        let wlp = Memory.WLP sequenceState targetState.pc
+        let allocatedTypesUnion = PersistentDict.fold (fun d a b -> PersistentDict.add a b d) sequenceState.allocatedTypes targetState.allocatedTypes
+        let typeStorageUnion = typeStoragesUnion sequenceState targetState
+        { sequenceState with pc = wlp; allocatedTypes = allocatedTypesUnion; typeStorage = typeStorageUnion }
+
     let checkTarget (target : cilState) (state : methodSequenceState) =
         assert(state.cilState.currentLoc.offset = 0<offsets> && targetMethods.Contains state.cilState.currentLoc.method)
-        let wlp = Memory.WLP state.cilState.state target.state.pc
-        let prevPc = state.cilState.state.pc
-        let prevAllocatedTypes = state.cilState.state.allocatedTypes
-        state.cilState.state.pc <- wlp
-        state.cilState.state.allocatedTypes <- PersistentDict.fold (fun d a b -> PersistentDict.add a b d) state.cilState.state.allocatedTypes target.state.allocatedTypes
-        try
-            let checkSat() =
-                if IsTruePathCondition state.cilState.state
-                then Some <| Memory.CopyState state.cilState.state
-                else
-                    match SolverInteraction.checkSat state.cilState.state with
-                    | SolverInteraction.SmtSat satInfo ->
-                        let primitiveModelState =
-                            match satInfo.mdl with
-                            | StateModel(modelState, _) -> modelState
-                            | _ -> __unreachable__()
-                        let modelState = Memory.CopyState state.cilState.state
-                        modelState.model <- StateModel(primitiveModelState, None)
-                        Some modelState
-                    | _ -> None
+        let unionState = statesUnion state.cilState.state target.state
 
-            if IsFalsePathCondition state.cilState.state
-            then false
+        let checkSat() =
+            if IsTruePathCondition unionState
+            then Some <| Memory.CopyState unionState
             else
-                match checkSat() with
-                | Some modelState ->
-                    let thisId, argIds = getThisAndArgs state.currentSequence.Head
-                    let sequence = List.rev state.currentSequence.Tail
-                    target.state.model <- StateModel(modelState, Some { sequence = sequence; this = thisId; args = argIds })
-                    finishedTargets[target] <- state
-                    true
-                | None -> false
-        finally
-            state.cilState.state.pc <- prevPc
-            state.cilState.state.allocatedTypes <- prevAllocatedTypes
+                match SolverInteraction.checkSat unionState with
+                | SolverInteraction.SmtSat satInfo ->
+                    let primitiveModelState =
+                        match satInfo.mdl with
+                        | StateModel(modelState, _) -> modelState
+                        | _ -> __unreachable__()
+                    let modelState = Memory.CopyState unionState
+                    modelState.model <- StateModel(primitiveModelState, None)
+                    TypeSolver.refineTypes modelState
+                    Some modelState
+                | _ -> None
+
+        if IsFalsePathCondition unionState
+        then false
+        else
+            match checkSat() with
+            | Some modelState ->
+                let thisId, argIds = getThisAndArgs state.currentSequence.Head
+                let sequence = List.rev state.currentSequence.Tail
+                target.state.model <- StateModel(modelState, Some { sequence = sequence; this = thisId; args = argIds })
+                finishedTargets[target] <- state
+                true
+            | None -> false
 
     let finish state =
         Logger.traceWithTag Logger.methodSequenceSearcherTag "[Searcher] Finished:"
@@ -212,6 +239,7 @@ type internal MethodSequenceSearcher(maxSequenceLength : uint, backwardExplorerF
         | _ -> __unreachable__()
 
     // TODO: Consider Nullable<>
+    // TODO: move to Model's method (like HasSequence)
     let tryConvertModelToSequence (cilState : cilState) =
         let modelState =
             match cilState.state.model with

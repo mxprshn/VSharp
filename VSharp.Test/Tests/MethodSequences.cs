@@ -381,7 +381,7 @@ public static class MethodSequences
             return 2;
         }
 
-        return 1;
+        return 3;
     }
 
     [TestSvm]
