@@ -8,6 +8,7 @@ using System.Reflection;
 using System.Text;
 using VSharp.CSharpUtils;
 using VSharp.Interpreter.IL;
+using VSharp.SVM;
 
 namespace VSharp
 {
@@ -117,7 +118,7 @@ namespace VSharp
             var baseSearchMode = options.SearchStrategy.ToSiliMode();
             // TODO: customize search strategies via console options
             var siliOptions =
-                new SiliOptions(
+                new SVMOptions(
                     explorationMode: explorationMode.NewTestCoverageMode(
                         coverageZone,
                         options.Timeout > 0 ? searchMode.NewFairMode(baseSearchMode) : baseSearchMode
@@ -139,7 +140,7 @@ namespace VSharp
                     maxMethodSequenceLength : UInt32.MaxValue
                 );
 
-            using var explorer = new SILI(siliOptions);
+            using var explorer = new SVM.SVM(siliOptions);
             var statistics = explorer.Statistics;
 
             void HandleInternalFail(Method? method, Exception exception)
@@ -152,6 +153,7 @@ namespace VSharp
                 if (exception is UnknownMethodException unknownMethodException)
                 {
                     Logger.printLogString(Logger.Error, $"Unknown method: {unknownMethodException.Method.FullName}");
+                    Logger.printLogString(Logger.Error, $"StackTrace: {unknownMethodException.InterpreterStackTrace}");
                     return;
                 }
 
@@ -202,24 +204,17 @@ namespace VSharp
                 }
             }
 
-            var testInfos = new List<GeneratedTestInfo>();
-
-            void OnTest(UnitTest test)
-            {
-                var coverage = statistics.GetCurrentCoverage();
-                testInfos.Add(new GeneratedTestInfo(false, statistics.CurrentExplorationTime, statistics.StepsCount, coverage));
-                unitTests.GenerateTest(test);
-            }
-
-            void OnError(UnitTest test)
-            {
-                var coverage = statistics.GetCurrentCoverage();
-                testInfos.Add(new GeneratedTestInfo(true, statistics.CurrentExplorationTime, statistics.StepsCount, coverage));
-                unitTests.GenerateError(test);
-            }
-
-            explorer.Interpret(isolated, entryPoints, OnTest, OnError, _ => { },
+            explorer.Interpret(isolated, entryPoints, unitTests.GenerateTest, unitTests.GenerateError, _ => { },
                 HandleInternalFail, HandleCrash);
+
+            var generatedTestInfos = statistics.GeneratedTestInfos.Select(i =>
+                new GeneratedTestInfo(
+                    IsError: i.isError,
+                    ExecutionTime: i.executionTime,
+                    StepsCount: i.stepsCount,
+                    Coverage: i.coverage
+                )
+            );
 
             var result = new Statistics(
                 statistics.CurrentExplorationTime,
@@ -228,7 +223,7 @@ namespace VSharp
                 unitTests.ErrorsCount,
                 statistics.StepsCount,
                 statistics.IncompleteStates.Select(e => e.iie.Value.Message).Distinct(),
-                testInfos);
+                generatedTestInfos);
             unitTests.WriteReport(statistics.PrintStatistics);
 
             return result;

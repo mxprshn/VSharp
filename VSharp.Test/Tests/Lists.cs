@@ -867,6 +867,25 @@ namespace IntegrationTests
     }
 
     [TestSvmFixture]
+    public static class SpanTests
+    {
+        [TestSvm(96)]
+        public static unsafe byte SpanTest(int[] a, byte b, int i)
+        {
+            fixed (void* ptr = a)
+            {
+                var span = new ReadOnlySpan<byte>(ptr, i);
+                var tmp = span[i - 1];
+                if (i - 1 == 0 && *(byte*)ptr != tmp)
+                    throw new ArgumentException();
+                if (tmp > b)
+                    return span[3];
+                return span[1];
+            }
+        }
+    }
+
+    [TestSvmFixture]
     public class ArrayCopying
     {
         private List<int> _elements;

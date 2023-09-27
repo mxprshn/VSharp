@@ -1,4 +1,4 @@
-namespace VSharp.Interpreter.IL
+namespace VSharp.SVM
 
 open System
 open System.Collections.Generic
@@ -9,12 +9,12 @@ open FSharpx.Collections
 
 open VSharp
 open VSharp.Core
-open CilStateOperations
+open VSharp.Interpreter.IL.CilStateOperations
 open VSharp.Interpreter.IL
 open VSharp.MethodSequences
 open VSharp.Solver
 
-type public SILI(options : SiliOptions) =
+type public SVM(options : SVMOptions) =
 
     let isMethodSequenceGenerationEnabled =
         options.methodSequenceStepsShare > 0uy || options.extraMethodSequenceSearchTimeout <> 0
@@ -37,11 +37,12 @@ type public SILI(options : SiliOptions) =
     let hasStepsLimit = options.stepsLimit > 0u
 
     do API.ConfigureSolver(SolverPool.mkSolver(solverTimeout))
+    do VSharp.System.SetUp.ConfigureInternalCalls()
 
     let mutable branchesReleased = false
     let mutable isStopped = false
 
-    let statistics = new SILIStatistics(Seq.empty)
+    let statistics = new SVMStatistics(Seq.empty)
 
     let emptyState = Memory.EmptyState()
     let interpreter = ILInterpreter()
@@ -50,6 +51,7 @@ type public SILI(options : SiliOptions) =
     let methodSequenceSearcher : IMethodSequenceSearcher = MethodSequenceSearcher(options.maxMethodSequenceLength, fun s -> MethodSequenceBackwardExplorer s)
 
     let mutable reportFinished : cilState -> unit = fun _ -> internalfail "reporter not configured!"
+    let mutable reportFatalError : cilState -> string -> unit = fun _ -> internalfail "reporter not configured!"
     let mutable reportError : cilState -> string -> unit = fun _ -> internalfail "reporter not configured!"
     let mutable reportStateIncomplete : cilState -> unit = fun _ -> internalfail "reporter not configured!"
     let mutable reportIncomplete : InsufficientInformationException -> unit = fun _ -> internalfail "reporter not configured!"
@@ -128,25 +130,27 @@ type public SILI(options : SiliOptions) =
             Console.WriteLine $"No sequence found for PC:\n{Print.PrintPC cilState.state.pc}; location: {cilState.currentLoc}"
             Console.WriteLine()
 
-    let reportState reporter isError cilState message =
+    let reportState reporter (suite : testSuite) cilState =
         try
             let isNewHistory() =
                 let methodHistory = Set.filter (fun h -> h.method.InCoverageZone) cilState.history
                 Set.exists (not << statistics.IsBasicBlockCoveredByTest) methodHistory
-            let suitableHistory = Set.isEmpty cilState.history || isNewHistory()
-            if suitableHistory && not isError || isError && statistics.IsNewError cilState message then
+            let isError = suite.IsErrorSuite
+            let isNewTest =
+                match suite with
+                | Test -> Set.isEmpty cilState.history || isNewHistory()
+                | Error(msg, isFatal) -> statistics.IsNewError cilState msg isFatal
+            if isNewTest then
                 let callStackSize = Memory.CallStackSize cilState.state
-                let methodHasByRefParameter (m : Method) =
-                    m.Parameters |> Array.exists (fun pi -> pi.ParameterType.IsByRef)
                 let entryMethod = entryMethodOf cilState
-                let hasException = isUnhandledError cilState
+                let hasException = isUnhandledException cilState
                 if isError && not hasException then
-                    if entryMethod.DeclaringType.IsValueType || methodHasByRefParameter entryMethod then
+                    if entryMethod.HasParameterOnStack then
                         Memory.ForcePopFrames (callStackSize - 2) cilState.state
                     else Memory.ForcePopFrames (callStackSize - 1) cilState.state
-                statistics.TrackFinished cilState
+                statistics.TrackFinished(cilState, isError)
                 let generateTest() =
-                    match TestGenerator.state2test isError entryMethod cilState.state message with
+                    match TestGenerator.state2test suite entryMethod cilState.state with
                     | Some test ->
                         //statistics.TrackFinished cilState
                         reporter test
@@ -160,7 +164,7 @@ type public SILI(options : SiliOptions) =
                     printSequence cilState
                     generateTest()
             else
-                        methodSequenceSearcher.RemoveTarget cilState |> ignore
+                methodSequenceSearcher.RemoveTarget cilState |> ignore
         with :? InsufficientInformationException as e ->
             cilState.iie <- Some e
             reportStateIncomplete cilState
@@ -169,13 +173,14 @@ type public SILI(options : SiliOptions) =
         let result = Memory.StateResult state.state
         Logger.info "Result of method %s is %O" (entryMethodOf state).FullName result
         Application.terminateState state
-        reportState action.Invoke false state null
+        reportState action.Invoke Test state
 
-    let wrapOnError (action : Action<UnitTest>) (state : cilState) errorMessage =
+    let wrapOnError (action : Action<UnitTest>) isFatal (state : cilState) errorMessage =
         if not <| String.IsNullOrWhiteSpace errorMessage then
             Logger.info $"Error in {(entryMethodOf state).FullName}: {errorMessage}"
         Application.terminateState state
-        reportState action.Invoke true state errorMessage
+        let testSuite = Error(errorMessage, isFatal)
+        reportState action.Invoke testSuite state
 
     let wrapOnStateIIE (action : Action<InsufficientInformationException>) (state : cilState) =
         searcher.Remove state
@@ -289,18 +294,27 @@ type public SILI(options : SiliOptions) =
         | ConcreteType t -> Some t
         | _ -> None
         try
-            match SolveGenericMethodParameters state.typeStorage method with
-            | Some(classParams, methodParams) ->
-                let classParams = classParams |> Array.choose getConcreteType
-                let methodParams = methodParams |> Array.choose getConcreteType
-                if classParams.Length = methodBase.DeclaringType.GetGenericArguments().Length &&
-                    (methodBase.IsConstructor || methodParams.Length = methodBase.GetGenericArguments().Length) then
-                    let reflectedType = Reflection.concretizeTypeParameters methodBase.ReflectedType classParams
-                    let method = Reflection.concretizeMethodParameters reflectedType methodBase methodParams
-                    Some method
-                else
-                    None
-            | _ -> None
+            if method.ContainsGenericParameters then
+                match SolveGenericMethodParameters state.typeStorage method with
+                | Some(classParams, methodParams) ->
+                    let classParams = classParams |> Array.choose getConcreteType
+                    let methodParams = methodParams |> Array.choose getConcreteType
+                    let declaringType = methodBase.DeclaringType
+                    let isSuitableType() =
+                        not declaringType.IsGenericType
+                        || classParams.Length = declaringType.GetGenericArguments().Length
+                    let isSuitableMethod() =
+                        methodBase.IsConstructor
+                        || not methodBase.IsGenericMethod
+                        || methodParams.Length = methodBase.GetGenericArguments().Length
+                    if isSuitableType() && isSuitableMethod() then
+                        let reflectedType = Reflection.concretizeTypeParameters methodBase.ReflectedType classParams
+                        let method = Reflection.concretizeMethodParameters reflectedType methodBase methodParams
+                        Some method
+                    else
+                        None
+                | _ -> None
+            else Some methodBase
         with
         | e ->
             reportInternalFail method e
@@ -309,26 +323,33 @@ type public SILI(options : SiliOptions) =
     member private x.FormIsolatedInitialStates (method : Method, initialState : state) =
         try
             initialState.model <- Memory.EmptyModel method
+            let declaringType = method.DeclaringType
             let cilState = makeInitialState method initialState
-            let this(*, isMethodOfStruct*) =
-                if method.IsStatic then None // *TODO: use hasThis flag from Reflection
-                else
-                    let this =
-                        if Types.IsValueType method.DeclaringType then
-                            Memory.NewStackFrame initialState None []
-                            Memory.AllocateTemporaryLocalVariableOfType initialState "this" -1 method.DeclaringType
-                        else
-                            Memory.MakeSymbolicThis method
-                    !!(IsNullReference this) |> AddConstraint initialState
-                    Some this
-            let parameters = SILI.AllocateByRefParameters initialState method
+            let this =
+                if method.HasThis then
+                    if Types.IsValueType declaringType then
+                        Memory.NewStackFrame initialState None []
+                        Memory.AllocateTemporaryLocalVariableOfType initialState "this" -1 declaringType |> Some
+                    else
+                        let this = Memory.MakeSymbolicThis method
+                        !!(IsNullReference this) |> AddConstraint initialState
+                        Some this
+                else None
+            let parameters = SVM.AllocateByRefParameters initialState method
             Memory.InitFunctionFrame initialState method this (Some parameters)
+            match this with
+            | Some this -> SolveThisType initialState this
+            | _ -> ()
             let cilStates = ILInterpreter.CheckDisallowNullAttribute method None cilState false id
-            assert (List.length cilStates = 1)
-            let [cilState] = cilStates
+            assert(List.length cilStates = 1)
             if isMethodSequenceGenerationEnabled then
                 methodSequenceSearcher.AddTarget None cilState |> ignore
-            interpreter.InitializeStatics cilState method.DeclaringType List.singleton
+            if not method.IsStaticConstructor then
+                let cilState = List.head cilStates
+                interpreter.InitializeStatics cilState declaringType List.singleton
+            else
+                Memory.MarkTypeInitialized initialState declaringType
+                cilStates
         with
         | e ->
             reportInternalFail method e
@@ -379,12 +400,13 @@ type public SILI(options : SiliOptions) =
         // TODO: update pobs when visiting new methods; use coverageZone
         let goodStates, iieStates, errors = interpreter.ExecuteOneInstruction s
         for s in goodStates @ iieStates @ errors do
-            if hasRuntimeException s |> not then
+            if hasRuntimeExceptionOrError s |> not then
                 statistics.TrackStepForward s ip
         let goodStates, toReportFinished = goodStates |> List.partition (fun s -> isExecutable s || isIsolated s)
         toReportFinished |> List.iter reportFinished
+        let errors, _ = errors |> List.partition (fun s -> hasReportedError s |> not)
         let errors, toReportExceptions = errors |> List.partition (fun s -> isIsolated s || not <| stoppedByException s)
-        let runtimeExceptions, userExceptions = toReportExceptions |> List.partition hasRuntimeException
+        let runtimeExceptions, userExceptions = toReportExceptions |> List.partition hasRuntimeExceptionOrError
         runtimeExceptions |> List.iter (fun state -> reportError state null)
         userExceptions |> List.iter reportFinished
         let iieStates, toReportIIE = iieStates |> List.partition isIsolated
@@ -500,13 +522,14 @@ type public SILI(options : SiliOptions) =
             reportIncomplete <- wrapOnIIE onIIE
             reportStateIncomplete <- wrapOnStateIIE onIIE
             reportFinished <- wrapOnTest onFinished
-            reportError <- wrapOnError onException
+            reportError <- wrapOnError onException false
+            reportFatalError <- wrapOnError onException true
             try
                 let initializeAndStart () =
                     let trySubstituteTypeParameters method =
                         let emptyState = Memory.EmptyState()
                         (Option.defaultValue method (x.TrySubstituteTypeParameters emptyState method), emptyState)
-                    interpreter.ConfigureErrorReporter reportError
+                    interpreter.ConfigureErrorReporter reportError reportFatalError
                     let isolated =
                         isolated
                         |> Seq.map trySubstituteTypeParameters

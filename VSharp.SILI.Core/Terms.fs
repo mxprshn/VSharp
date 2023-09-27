@@ -18,14 +18,14 @@ type stackKey =
         | ThisKey _ -> "this"
         | ParameterKey pi -> if String.IsNullOrEmpty pi.Name then "#" + toString pi.Position else pi.Name
         | LocalVariableKey (lvi,_) -> "__loc__" + lvi.LocalIndex.ToString()
-        | TemporaryLocalVariableKey (typ, index) -> sprintf "__tmp__%s%d" (Reflection.getFullTypeName typ) index
+        | TemporaryLocalVariableKey (typ, index) -> $"__tmp__%s{Reflection.getFullTypeName typ}%d{index}"
     override x.GetHashCode() =
         let fullname =
             match x with
-            | ThisKey m -> sprintf "%s##this" m.FullName
-            | ParameterKey pi -> sprintf "%O##%O##%d" pi.Member pi pi.Position
-            | LocalVariableKey (lvi, m) -> sprintf "%O##%s" m.FullName (lvi.ToString())
-            | TemporaryLocalVariableKey (typ, index) -> sprintf "temporary##%s%d" (Reflection.getFullTypeName typ) index
+            | ThisKey m -> $"%s{m.FullName}##this"
+            | ParameterKey pi -> $"{pi.Member}##{pi}##%d{pi.Position}"
+            | LocalVariableKey (lvi, m) -> $"{m.FullName}##%s{lvi.ToString()}"
+            | TemporaryLocalVariableKey (typ, index) -> $"temporary##%s{Reflection.getFullTypeName typ}%d{index}"
         fullname.GetDeterministicHashCode()
     interface IComparable with
         override x.CompareTo(other: obj) =
@@ -56,7 +56,7 @@ type stackKey =
         | ParameterKey p -> ParameterKey (Reflection.concretizeParameter p typeSubst)
         | LocalVariableKey(l, m) ->
             let m' = m.SubstituteTypeVariables typeSubst
-            let l' = m.LocalVariables.[l.LocalIndex]
+            let l' = m.LocalVariables[l.LocalIndex]
             LocalVariableKey(l', m')
         | TemporaryLocalVariableKey (typ, index) ->
             // TODO: index may become inconsistent here
@@ -113,7 +113,7 @@ type termNode =
             | Nop -> k "<VOID>"
             | Constant(name, _, _) -> k name.v
             | Concrete(_, (ClassType(t, _) as typ)) when isSubtypeOrEqual t typedefof<Delegate> ->
-                sprintf "<Lambda Expression %O>" typ |> k
+                $"<Lambda Expression {typ}>" |> k
             | Concrete(obj, AddressType) when (obj :?> int32 list) = [0] -> k "null"
             | Concrete(c, Char) when c :?> char = '\000' -> k "'\\000'"
             | Concrete(c, Char) -> sprintf "'%O'" c |> k
@@ -138,7 +138,7 @@ type termNode =
                 | Cast(_, dest) ->
                     assert (List.length operands = 1)
                     toStr operation.priority indent (List.head operands).term (fun term ->
-                    sprintf "(%O %s)" dest term
+                    $"({dest} %s{term})"
                         |> checkExpression operation.priority parentPriority
                         |> k)
                 | Application f ->
@@ -153,7 +153,7 @@ type termNode =
                 let guardedToString (guard, term) k =
                     toStringWithParentIndent indent guard (fun guardString ->
                     toStringWithParentIndent indent term (fun termString ->
-                    sprintf "| %s ~> %s" guardString termString |> k))
+                    $"| %s{guardString} ~> %s{termString}" |> k))
                 Cps.Seq.mapk guardedToString guardedTerms (fun guards ->
                 let printed = guards |> Seq.sort |> join ("\n" + indent)
                 formatIfNotEmpty (formatWithIndent indent) printed |> sprintf "UNION[%s]" |> k)
@@ -205,14 +205,14 @@ and address =
     override x.ToString() =
         match x with
         | PrimitiveStackLocation key -> toString key
-        | ClassField(addr, field) -> sprintf "%O.%O" addr field
+        | ClassField(addr, field) -> $"{addr}.{field}"
         | ArrayIndex(addr, idcs, _) -> sprintf "%O[%s]" addr (List.map toString idcs |> join ", ")
-        | StaticField(typ, field) -> sprintf "%O.%O" typ field
-        | StructField(addr, field) -> sprintf "%O.%O" addr field
-        | ArrayLength(addr, dim, _) -> sprintf "Length(%O, %O)" addr dim
+        | StaticField(typ, field) -> $"{typ}.{field}"
+        | StructField(addr, field) -> $"{addr}.{field}"
+        | ArrayLength(addr, dim, _) -> $"Length({addr}, {dim})"
         | BoxedLocation(addr, typ) -> $"{typ}^{addr}"
-        | StackBufferIndex(key, idx) -> sprintf "%O[%O]" key idx
-        | ArrayLowerBound(addr, dim, _) -> sprintf "LowerBound(%O, %O)" addr dim
+        | StackBufferIndex(key, idx) -> $"{key}[{idx}]"
+        | ArrayLowerBound(addr, dim, _) -> $"LowerBound({addr}, {dim})"
     member x.Zone() =
         match x with
         | PrimitiveStackLocation _
@@ -224,6 +224,17 @@ and address =
         | ArrayLowerBound  _ -> "Heap"
         | StaticField _ -> "Statics"
         | StructField(addr, _) -> addr.Zone()
+    member x.TypeOfLocation with get() =
+        match x with
+        | ClassField(_, field)
+        | StructField(_, field)
+        | StaticField(_, field) -> field.typ
+        | ArrayIndex(_, _, (elementType, _, _)) -> elementType
+        | BoxedLocation(_, typ) -> typ
+        | ArrayLength _
+        | ArrayLowerBound  _ -> lengthType
+        | StackBufferIndex _ -> typeof<int8>
+        | PrimitiveStackLocation loc -> loc.TypeOfLocation
 
 and
     [<CustomEquality;NoComparison>]
@@ -241,6 +252,15 @@ and
         abstract SubTerms : term seq
         abstract Time : vectorTime
         abstract TypeOfLocation : Type
+
+and delegateInfo =
+    {
+        methodInfo : System.Reflection.MethodInfo
+        target : term
+        delegateType : Type
+    }
+    static member Create(methodInfo, target, t) =
+        { methodInfo = methodInfo; target = target; delegateType = t }
 
 type INonComposableSymbolicConstantSource =
     inherit ISymbolicConstantSource
@@ -279,7 +299,7 @@ module internal Terms =
         HashMap.addTerm (Ref address)
     let Ptr baseAddress typ offset = HashMap.addTerm (Ptr(baseAddress, typ, offset))
     let Slice term slices = HashMap.addTerm (Slice(term, slices))
-    let ConcreteHeapAddress addr = Concrete addr addressType
+    let ConcreteHeapAddress (addr : concreteHeapAddress) = Concrete addr addressType
     let Union gvs =
         if List.length gvs < 2 then internalfail "Empty and one-element unions are forbidden!"
         HashMap.addTerm (Union gvs)
@@ -306,15 +326,15 @@ module internal Terms =
 
     let operationOf = term >> function
         | Expression(op, _, _) -> op
-        | term -> internalfailf "expression expected, %O received" term
+        | term -> internalfail $"expression expected, {term} received"
 
     let argumentsOf = term >> function
         | Expression(_, args, _) -> args
-        | term -> internalfailf "expression expected, %O received" term
+        | term -> internalfail $"expression expected, {term} received"
 
     let fieldsOf = term >> function
         | Struct(fields, _) -> fields
-        | term -> internalfailf "struct or class expected, %O received" term
+        | term -> internalfail $"struct or class expected, {term} received"
 
     let private typeOfUnion getType gvs =
         let types = List.map (snd >> getType) gvs
@@ -324,7 +344,7 @@ module internal Terms =
             let allSame =
                 List.forall ((=) t) ts
             if allSame then t
-            else internalfailf "evaluating type of unexpected union %O!" gvs
+            else internalfail $"evaluating type of unexpected union {gvs}!"
 
     let commonTypeOf getType term =
         match term.term with
@@ -332,31 +352,20 @@ module internal Terms =
         | Union gvs -> typeOfUnion getType gvs
         | _ -> getType term
 
-    let typeOfAddress = function
-        | ClassField(_, field)
-        | StructField(_, field)
-        | StaticField(_, field) -> field.typ
-        | ArrayIndex(_, _, (elementType, _, _)) -> elementType
-        | BoxedLocation(_, typ) -> typ
-        | ArrayLength _
-        | ArrayLowerBound  _ -> lengthType
-        | StackBufferIndex _ -> typeof<int8>
-        | PrimitiveStackLocation loc -> loc.TypeOfLocation
-
     let sightTypeOfPtr =
         let getTypeOfPtr = term >> function
             | Ptr(_, typ, _) -> typ
-            | term -> internalfailf "expected pointer, but got %O" term
+            | term -> internalfail $"expected pointer, but got {term}"
         commonTypeOf getTypeOfPtr
 
     let rec typeOfRef term =
         let getTypeOfRef term =
             match term.term with
             | HeapRef(_, t) -> t
-            | Ref address -> typeOfAddress address
+            | Ref address -> address.TypeOfLocation
             | Ptr(_, sightType, _) -> sightType
             | _ when typeOf term |> isNative -> typeof<byte>
-            | term -> internalfailf "expected reference, but got %O" term
+            | term -> internalfail $"expected reference, but got {term}"
         commonTypeOf getTypeOfRef term
 
     and typeOf term =
@@ -369,7 +378,7 @@ module internal Terms =
             | Struct(_, t) -> t
             | Ref _ -> (typeOfRef term).MakeByRefType()
             | Ptr _ -> (sightTypeOfPtr term).MakePointerType()
-            | _ -> internalfailf "getting type of unexpected term %O" term
+            | _ -> internalfail $"getting type of unexpected term {term}"
         commonTypeOf getType term
 
     let symbolicTypeToArrayType = function
@@ -378,7 +387,7 @@ module internal Terms =
             | Vector -> (elementType, 1, true)
             | ConcreteDimension d -> (elementType, d, false)
             | SymbolicDimension -> __insufficientInformation__ "Cannot process array of unknown dimension!"
-        | typ -> internalfailf "symbolicTypeToArrayType: expected array type, but got %O" typ
+        | typ -> internalfail $"symbolicTypeToArrayType: expected array type, but got {typ}"
 
     let arrayTypeToSymbolicType (elemType : Type, dim, isVector) =
         if isVector then elemType.MakeArrayType()
@@ -571,6 +580,14 @@ module internal Terms =
         assert(isBool term)
         makeUnary OperationType.LogicalNot term typeof<bool>
 
+    and createCombinedDelegate (delegates : term list) typ =
+        assert(List.isEmpty delegates |> not)
+        if List.length delegates = 1 then List.head delegates
+        else Concrete delegates typ
+
+    and concreteDelegate methodInfo target delegateType =
+        Concrete (delegateInfo.Create(methodInfo, target, delegateType)) delegateType
+
     and (|True|_|) term = if isTrue term then Some True else None
     and (|False|_|) term = if isFalse term then Some False else None
 
@@ -648,30 +665,27 @@ module internal Terms =
 
     and (|CombinedTerm|_|) = term >> (|Combined|_|)
 
+    and (|CombinedDelegate|_|) = function
+        | Concrete(:? list<term> as delegates, t) ->
+            assert(t.IsAssignableTo typeof<Delegate>)
+            CombinedDelegate delegates |> Some
+        | _ -> None
+
+    and (|ConcreteDelegate|_|) (termNode : termNode) =
+        match termNode with
+        | Concrete(:? delegateInfo as d, t) ->
+            assert(t.IsAssignableTo typeof<Delegate>)
+            ConcreteDelegate d |> Some
+        | _ -> None
+
     and (|ConcreteHeapAddress|_|) = function
         | Concrete(:? concreteHeapAddress as a, AddressType) -> ConcreteHeapAddress a |> Some
         | _ -> None
 
-    and getConcreteHeapAddress = term >> function
-        | ConcreteHeapAddress(addr) -> addr
+    and getConcreteHeapAddress term =
+        match term.term with
+        | ConcreteHeapAddress(address) -> address
         | _ -> __unreachable__()
-
-    and tryPtrToArrayInfo (typeOfBase : Type) sightType offset =
-        match offset.term with
-        | Concrete(:? int as offset, _) ->
-            let checkType() =
-                typeOfBase.IsSZArray && typeOfBase.GetElementType() = sightType
-                || typeOfBase = typeof<string> && sightType = typeof<char>
-            let mutable elemSize = 0
-            let checkOffset() =
-                elemSize <- internalSizeOf sightType
-                (offset % elemSize) = 0
-            if not typeOfBase.ContainsGenericParameters && checkType() && checkOffset() then
-                let arrayType = (sightType, 1, true)
-                let index = int (offset / elemSize)
-                Some ([makeNumber index], arrayType)
-            else None
-        | _ -> None
 
     and tryIntListFromTermList (termList : term list) =
         let addElement term concreteList k =
@@ -861,7 +875,7 @@ module internal Terms =
         let defaultCase() =
             Expression Combine terms t
         let isSolid term typeOfTerm =
-            typeOfTerm = t || isRefOrPtr term
+            typeOfTerm = t || isRefOrPtr term && (not t.IsValueType || t.IsByRef || isNative t || t.IsPrimitive)
         let simplify p s e pos =
             let typ = typeOf p
             let termSize = lazy (internalSizeOf typ)

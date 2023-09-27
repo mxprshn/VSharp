@@ -17,7 +17,7 @@ module API =
     val BranchStatementsOnNull : state -> term -> (state -> (term * state -> 'a) -> 'a) -> (state -> (term * state -> 'a) -> 'a) -> ((term * state) list -> 'a) -> 'a
     val BranchExpressions : ((term -> 'a) -> 'b) -> ((term -> 'a) -> 'a) -> ((term -> 'a) -> 'a) -> (term -> 'a) -> 'b
     val StatedConditionalExecution : (state -> (state -> (term * state -> 'a) -> 'b) -> (state -> ('item -> 'a) -> 'a) -> (state -> ('item -> 'a) -> 'a) -> ('item -> 'item -> 'item list) -> ('item  list -> 'a) -> 'b)
-    val StatedConditionalExecutionAppendResults : (state -> (state -> (term * state -> 'a) -> 'b) -> (state -> (state list -> 'a) -> 'a) -> (state -> (state list -> 'a) -> 'a) -> (state list -> 'a) -> 'b)
+    val StatedConditionalExecutionAppend : (state -> (state -> (term * state -> 'a) -> 'b) -> (state -> ('c list -> 'a) -> 'a) -> (state -> ('c list -> 'a) -> 'a) -> ('c list -> 'a) -> 'b)
 
     val GuardedApplyExpression : term -> (term -> term) -> term
     val GuardedApplyExpressionWithPC : pathCondition -> term -> (term -> term) -> term
@@ -32,11 +32,8 @@ module API =
     val PerformUnaryOperation : OperationType -> term -> (term -> 'a) -> 'a
 
     val SolveGenericMethodParameters : typeStorage -> IMethod -> (symbolicType[] * symbolicType[]) option
+    val SolveThisType : state -> term -> unit
     val ResolveCallVirt : state -> term -> Type -> IMethod -> symbolicType seq
-
-    val ConfigureErrorReporter : (state -> string -> unit) -> unit
-    val ErrorReporter : string -> (state -> term -> unit)
-    val UnspecifiedErrorReporter : unit -> (state -> term -> unit)
 
     val MethodMockAndCall : state -> IMethod -> term option -> term list -> term option
     val ExternMockAndCall : state -> IMethod -> term option -> term list -> term option
@@ -75,7 +72,8 @@ module API =
 
         val ReinterpretConcretes : term list -> Type -> obj
 
-        val TryPtrToArrayInfo : Type -> Type -> term -> option<term list * arrayType>
+        val TryPtrToRef : state -> pointerBase -> Type -> term -> option<address>
+        val PtrToRefFork : state -> pointerBase -> Type -> term -> list<option<address> * state>
 
         val TryTermToObj : state -> term -> obj option
 
@@ -85,11 +83,15 @@ module API =
         val IsRefOrPtr : term -> bool
         val IsConcrete : term -> bool
         val IsNullReference : term -> term
+        val IsBadRef : term -> term
 
         val (|ConcreteHeapAddress|_|) : termNode -> concreteHeapAddress option
 
         val (|Combined|_|) : termNode -> (term list * Type) option
         val (|CombinedTerm|_|) : term -> (term list * Type) option
+
+        val (|CombinedDelegate|_|) : term -> term list option
+        val (|ConcreteDelegate|_|) : term -> delegateInfo option
 
         val (|True|_|) : term -> unit option
         val (|False|_|) : term -> unit option
@@ -99,7 +101,8 @@ module API =
         val (|NullRef|_|) : term -> Type option
         val (|NonNullRef|_|) : term -> unit option
         val (|NullPtr|_|) : term -> unit option
-        val (|DetachedPtr|_|) : term -> term option
+        val (|DetachedPtr|_|) : termNode -> term option
+        val (|DetachedPtrTerm|_|) : term -> term option
 
         val (|StackReading|_|) : ISymbolicConstantSource -> option<stackKey>
         val (|HeapReading|_|) : ISymbolicConstantSource -> option<heapAddressKey * memoryRegion<heapAddressKey, vectorTime intervals>>
@@ -117,6 +120,8 @@ module API =
         val (|TypeSubtypeRefSource|_|) : ISymbolicConstantSource -> option<Type * heapAddress>
         val (|RefSubtypeRefSource|_|) : ISymbolicConstantSource -> option<heapAddress * heapAddress>
         val (|GetHashCodeSource|_|) : ISymbolicConstantSource -> option<term>
+        val (|PointerAddressSource|_|) : ISymbolicConstantSource -> option<ISymbolicConstantSource>
+        val (|PointerOffsetSource|_|) : ISymbolicConstantSource -> option<ISymbolicConstantSource>
 
         val (|Int8T|_|) : term -> option<unit>
         val (|UInt8T|_|) : term -> option<unit>
@@ -194,6 +199,13 @@ module API =
         val (>>=) : term -> term -> term
         // Lightweight version: divide by zero exceptions are ignored!
         val (%%%) : term -> term -> term
+        val GreaterOrEqualUn : term -> term -> term
+        val Equality : term -> term -> term
+        val Inequality : term -> term -> term
+        val Less : term -> term -> term
+        val LessOrEqual : term -> term -> term
+        val Greater : term -> term -> term
+        val GreaterOrEqual : term -> term -> term
         val Mul : term -> term -> term
         val Sub : term -> term -> term
         val Add : term -> term -> term
@@ -250,26 +262,40 @@ module API =
         val NewStackFrame : state -> IMethod option -> (stackKey * term option * Type) list -> unit
         val NewTypeVariables : state -> (Type * Type) list -> unit
 
+        val StringArrayInfo : state -> term -> term option -> term * arrayType
+
         val ReferenceArrayIndex : state -> term -> term list -> Type option -> term
         val ReferenceField : state -> term -> fieldId -> term
 
+        val ExtractAddress : term -> term
+        val ExtractPointerOffset : term -> term
+
         val Read : state -> term -> term
+        val ReadUnsafe : IErrorReporter -> state -> term -> term
         val ReadLocalVariable : state -> stackKey -> term
         val ReadThis : state -> IMethod -> term
         val ReadArgument : state -> ParameterInfo -> term
         val ReadField : state -> term -> fieldId -> term
+        val ReadFieldUnsafe : IErrorReporter -> state -> term -> fieldId -> term
         val ReadArrayIndex : state -> term -> term list -> Type option -> term
+        val ReadArrayIndexUnsafe : IErrorReporter -> state -> term -> term list -> Type option -> term
         val ReadStringChar : state -> term -> term -> term
         val ReadStaticField : state -> Type -> fieldId -> term
         val ReadDelegate : state -> term -> term option
 
+        val CombineDelegates : state -> term list -> Type -> term
+        val RemoveDelegate : state -> term -> term -> Type -> term
+
         val InitializeArray : state -> term -> term -> unit
 
         val Write : state -> term -> term -> state list
+        val WriteUnsafe : IErrorReporter -> state -> term -> term -> state list
         val WriteStackLocation : state -> stackKey -> term -> unit
         val WriteStructField : term -> fieldId -> term -> term
+        val WriteStructFieldUnsafe : IErrorReporter -> state -> term -> fieldId -> term -> term
         val WriteClassField : state -> term -> fieldId -> term -> state list
         val WriteArrayIndex : state -> term -> term list -> term -> Type option -> state list
+        val WriteArrayIndexUnsafe : IErrorReporter -> state -> term -> term list -> term -> Type option -> state list
         val WriteStaticField : state -> Type -> fieldId -> term -> unit
 
         val DefaultOf : Type -> term
@@ -284,6 +310,7 @@ module API =
         val BoxValueType : state -> term -> term
 
         val InitializeStaticMembers : state -> Type -> unit
+        val MarkTypeInitialized : state -> Type -> unit
 
         val InitFunctionFrame : state -> IMethod -> term option -> term option list option -> unit
         val AllocateTemporaryLocalVariable : state -> int -> Type -> term -> term
@@ -296,7 +323,7 @@ module API =
         val AllocateArrayFromFieldInfo : state -> FieldInfo -> term
         val AllocateString : string -> state -> term
         val AllocateEmptyString : state -> term -> term
-        val AllocateDelegate : state -> term -> term
+        val AllocateDelegate : state -> MethodInfo -> term -> Type -> term
         val CreateStringFromChar : state -> term -> term
         val IsAllocated : state -> stackKey -> bool
 

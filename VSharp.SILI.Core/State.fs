@@ -12,7 +12,21 @@ type typeVariables = mappedStack<typeWrapper, Type> * Type list stack
 
 type stackBufferKey = concreteHeapAddress
 
-// TODO: add empty concrete memory class
+type concreteMemorySource =
+    | HeapSource
+    | StructFieldSource of concreteMemorySource * fieldId
+    | BoxedLocationSource of concreteHeapAddress
+    | ClassFieldSource of concreteHeapAddress * fieldId
+    | ArrayIndexSource of concreteHeapAddress * int list
+    | ArrayLowerBoundSource of concreteHeapAddress * int
+    | ArrayLengthSource of concreteHeapAddress * int
+    | StaticFieldSource of Type * fieldId
+    with
+    member x.StructField fieldId =
+        match x with
+        | HeapSource -> HeapSource
+        | _ -> StructFieldSource(x, fieldId)
+
 type IConcreteMemory =
     abstract Copy : unit -> IConcreteMemory
     abstract Contains : concreteHeapAddress -> bool
@@ -20,7 +34,9 @@ type IConcreteMemory =
     abstract TryVirtToPhys : concreteHeapAddress -> obj option
     abstract PhysToVirt : obj -> concreteHeapAddress
     abstract TryPhysToVirt : obj -> concreteHeapAddress option
-    abstract Allocate : concreteHeapAddress -> obj -> unit
+    abstract TryPhysToVirt : concreteMemorySource -> concreteHeapAddress option
+    abstract AllocateRefType : concreteHeapAddress -> obj -> unit
+    abstract AllocateValueType : concreteHeapAddress -> concreteMemorySource -> obj -> unit
     abstract ReadClassField : concreteHeapAddress -> fieldId -> obj
     abstract ReadArrayIndex : concreteHeapAddress -> int list -> obj
     // TODO: too expensive! use Seq.iter2 instead with lazy indices sequence
@@ -351,68 +367,81 @@ and typeStorage private (constraints, addressesTypes, typeMocks, classesParams, 
 
     member x.IsValid with get() = addressesTypes.Count = constraints.Count
 
-and
-    candidates private(publicBuiltInTypes, publicUserTypes, privateUserTypes, rest, mock, userAssembly) =
-        let orderedTypes = seq {
-            yield! publicBuiltInTypes
-            yield! publicUserTypes
-            yield! privateUserTypes
-            yield! rest
+and candidates private(publicBuiltInTypes, publicUserTypes, privateUserTypes, rest, mock, userAssembly) =
+    let orderedTypes = seq {
+        yield! publicBuiltInTypes
+        yield! publicUserTypes
+        yield! privateUserTypes
+        yield! rest
+    }
+
+    new(types : Type seq, mock: ITypeMock option, userAssembly : Reflection.Assembly) =
+        let types = Seq.distinct types
+        let isPublicBuiltIn (t : Type) = TypeUtils.isPublic t && Reflection.isBuiltInType t
+        let isPublicUser (t: Type) = TypeUtils.isPublic t && t.Assembly = userAssembly
+        let isPrivateUser (t: Type) = not (TypeUtils.isPublic t) && t.Assembly = userAssembly
+        let publicBuiltInTypes = types |> Seq.filter isPublicBuiltIn
+        let rest = types |> Seq.filter (isPublicBuiltIn >> not)
+        let publicUserTypes = rest |> Seq.filter isPublicUser
+        let rest = rest |> Seq.filter (isPublicUser >> not)
+        let privateUserTypes = rest |> Seq.filter isPrivateUser
+        let rest = rest |> Seq.filter (isPrivateUser >> not)
+        candidates(publicBuiltInTypes, publicUserTypes, privateUserTypes, rest, mock, userAssembly)
+
+    member x.IsEmpty
+        with get() =
+            match mock with
+            | Some _ -> false
+            | None -> Seq.isEmpty x.Types
+
+    member x.Types =
+        seq {
+            yield! orderedTypes |> Seq.map ConcreteType
+            if mock.IsSome then yield mock.Value |> MockType
         }
 
-        new(types : seq<Type> , mock: ITypeMock option, userAssembly : Reflection.Assembly) =
-            let isPublicBuiltIn (t : Type) = TypeUtils.isPublic t && Reflection.isBuiltInType t
-            let isPublicUser (t: Type) = TypeUtils.isPublic t && t.Assembly = userAssembly
-            let isPrivateUser (t: Type) = not (TypeUtils.isPublic t) && t.Assembly = userAssembly
-            let publicBuiltInTypes = types |> Seq.filter isPublicBuiltIn
-            let publicUserTypes = types |> Seq.filter isPublicUser
-            let privateUserTypes = types |> Seq.filter isPrivateUser
-            let predicates = [isPublicBuiltIn; isPublicUser; isPrivateUser]
-            let rest = List.fold (fun types predicate -> Seq.filter (predicate >> not) types) types predicates
-            candidates(publicBuiltInTypes, publicUserTypes, privateUserTypes, rest, mock, userAssembly)
+    static member Empty() =
+        candidates(Seq.empty, None, Reflection.mscorlibAssembly)
 
-        member x.IsEmpty
-            with get() =
-                match mock with
-                | Some _ -> false
-                | None -> Seq.isEmpty x.Types
+    member x.Copy(changeMock: ITypeMock -> ITypeMock) =
+        let newMock =
+            match mock with
+            | Some m -> Some (changeMock m)
+            | None -> None
+        candidates(publicBuiltInTypes, publicUserTypes, privateUserTypes, rest, newMock, userAssembly)
 
-        member x.Types =
-            seq {
-                yield! orderedTypes |> Seq.map ConcreteType
-                if mock.IsSome then yield mock.Value |> MockType
-            }
+    member x.Pick() =
+        Seq.head x.Types
 
-        static member Empty() =
-            candidates(Seq.empty, None, Reflection.mscorlibAssembly)
+    member x.Filter(typesPredicate, refineMock : ITypeMock -> ITypeMock option) =
+        let publicBuiltInTypes = Seq.filter typesPredicate publicBuiltInTypes
+        let publicUserTypes = Seq.filter typesPredicate publicUserTypes
+        let privateUserTypes = Seq.filter typesPredicate privateUserTypes
+        let rest = Seq.filter typesPredicate rest
+        let mock =
+            match mock with
+            | Some typeMock -> refineMock typeMock
+            | None -> None
+        candidates(publicBuiltInTypes, publicUserTypes, privateUserTypes, rest, mock, userAssembly)
 
-        member x.Copy(changeMock: ITypeMock -> ITypeMock) =
-            let newMock =
-                match mock with
-                | Some m -> Some (changeMock m)
-                | None -> None
-            candidates(publicBuiltInTypes, publicUserTypes, privateUserTypes, rest, newMock, userAssembly)
+    member x.Take(count) =
+        let types =
+            match mock with
+            | Some _ -> Seq.truncate (count - 1) orderedTypes
+            | None -> Seq.truncate count orderedTypes
+        candidates(types, mock, userAssembly)
 
-        member x.Pick() =
-            Seq.head x.Types
+    member x.Eval() =
+        let publicBuiltInTypes = Seq.toList publicBuiltInTypes
+        let publicUserTypes = Seq.toList publicUserTypes
+        let privateUserTypes = Seq.toList privateUserTypes
+        let rest = Seq.toList rest
+        candidates(publicBuiltInTypes, publicUserTypes, privateUserTypes, rest, mock, userAssembly)
 
-        member x.Filter(typesPredicate, refineMock : ITypeMock -> ITypeMock option) =
-            let publicBuiltInTypes = Seq.filter typesPredicate publicBuiltInTypes
-            let publicUserTypes = Seq.filter typesPredicate publicUserTypes
-            let privateUserTypes = Seq.filter typesPredicate privateUserTypes
-            let rest = Seq.filter typesPredicate rest
-            let mock =
-                match mock with
-                | Some typeMock -> refineMock typeMock
-                | None -> None
-            candidates(publicBuiltInTypes, publicUserTypes, privateUserTypes, rest, mock, userAssembly)
-
-        member x.Take(count) =
-            let types =
-                match mock with
-                | Some _ -> Seq.truncate (count - 1) orderedTypes
-                | None -> Seq.truncate count orderedTypes
-            candidates(types, mock, userAssembly)
+and IErrorReporter =
+    abstract ConfigureState : state -> unit
+    abstract ReportError : string -> term -> unit
+    abstract ReportFatalError : string -> term -> unit
 
 and
     [<ReferenceEquality>]

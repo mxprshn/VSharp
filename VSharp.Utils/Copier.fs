@@ -48,15 +48,26 @@ type Copier () =
             let a' = Array.CreateInstance(typ.GetElementType(), lengths, lowerBounds)
             let phys' = {object = a'}
             copiedObjects.Add(phys, phys')
-            let indices = Array.allIndicesViaLens (Array.toList lowerBounds) (Array.toList lengths)
-            for index in indices do
+            let indicesWithValues = Array.getArrayIndicesWithValues a
+            for index, v in indicesWithValues do
                 let index = List.toArray index
-                let v' = deepCopyObject {object = a.GetValue index}
+                let v' = deepCopyObject {object = v}
                 a'.SetValue(v'.object, index)
             phys'
         | :? String as s ->
             let phys' = {object = String(s)}
             copiedObjects.Add(phys, phys')
+            phys'
+        | _ when TypeUtils.isDelegate typ ->
+            assert(obj :? Delegate)
+            let obj = obj :?> Delegate
+            let obj' = obj.Clone()
+            let phys' = {object = obj'}
+            copiedObjects.Add(phys, phys')
+            let target' = deepCopyObject {object = obj.Target}
+            let targetField = typ.GetField("_target", Reflection.instanceBindingFlags)
+            assert(targetField <> null)
+            targetField.SetValue(obj', target')
             phys'
         | _ when typ.IsClass || typ.IsValueType ->
             let obj' = FormatterServices.GetUninitializedObject typ

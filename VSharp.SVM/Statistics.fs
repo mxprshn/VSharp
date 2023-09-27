@@ -1,4 +1,4 @@
-namespace VSharp.Interpreter.IL
+namespace VSharp.SVM
 
 open System
 open System.Diagnostics
@@ -42,15 +42,26 @@ type statisticsDump =
         topVisitedLocationsOutOfZone : (codeLocation * uint) list
     }
 
+type generatedTestInfo =
+    {
+        isError : bool
+        executionTime : TimeSpan
+        stepsCount : uint
+        coverage : double
+    }
+
 // TODO: move statistics into (unique) instances of code location!
-type public SILIStatistics(entryMethods : Method seq) =
+type public SVMStatistics(entryMethods : Method seq) =
 
     let entryMethods = List<Method>(entryMethods)
 
     let totalVisited = Dictionary<codeLocation, uint>()
     let visitedWithHistory = Dictionary<codeLocation, HashSet<codeLocation>>()
-    let emittedErrors = HashSet<ipStack * string>()
-    let emittedExceptions = HashSet<string * string>()
+    let emittedErrors = HashSet<ipStack * string * bool>()
+    let emittedExceptions = HashSet<string * string * bool>()
+
+    let generatedTestInfos = List<generatedTestInfo>()
+
     let pcsWithoutSequences = HashSet<string>()
 
     let mutable isVisitedBlocksNotCoveredByTestsRelevant = 1
@@ -154,7 +165,7 @@ type public SILIStatistics(entryMethods : Method seq) =
             elif currentMethod.InCoverageZone then nonCoveringStepsInsideZone <- nonCoveringStepsInsideZone + 1u
             else nonCoveringStepsOutsideZone <- nonCoveringStepsOutsideZone + 1u
 
-            totalVisited.[currentLoc] <- totalRef.Value + 1u
+            totalVisited[currentLoc] <- totalRef.Value + 1u
 
             let mutable historyRef = ref null
             if not <| visitedWithHistory.TryGetValue(currentLoc, historyRef) then
@@ -207,15 +218,16 @@ type public SILIStatistics(entryMethods : Method seq) =
         else false
 
     member x.GetCurrentCoverage (methods : Method seq) =
+        let methods = List.ofSeq methods
         let getCoveredInstructionsCount (m : Method) =
             let mutable coveredBlocksOffsets = ref null
             if blocksCoveredByTests.TryGetValue(m, coveredBlocksOffsets) then
                 let cfg = m.CFG
                 coveredBlocksOffsets.Value |> Seq.sumBy (fun o -> (cfg.ResolveBasicBlock o.Key).BlockSize)
             else 0
-        let methodsInZone = methods |> Seq.filter (fun m -> m.InCoverageZone)
-        let totalInstructionsCount = methodsInZone |> Seq.sumBy (fun m -> m.CFG.MethodSize)
-        let coveredInstructionsCount = methodsInZone |> Seq.sumBy getCoveredInstructionsCount
+        let methodsInZone = methods |> List.filter (fun m -> m.InCoverageZone)
+        let totalInstructionsCount = methodsInZone |> List.sumBy (fun m -> m.CFG.MethodSize)
+        let coveredInstructionsCount = methodsInZone |> List.sumBy getCoveredInstructionsCount
         if totalInstructionsCount <> 0 then
             double coveredInstructionsCount / double totalInstructionsCount * 100.0
         else 0.0
@@ -228,15 +240,23 @@ type public SILIStatistics(entryMethods : Method seq) =
     member x.OnBranchesReleased() =
         branchesReleased <- true
 
-    member x.TrackFinished (s : cilState) =
+    member x.TrackFinished (s : cilState, isError) =
         testsCount <- testsCount + 1u
-        Logger.traceWithTag Logger.stateTraceTag $"FINISH: {s.id}"
         x.SetBasicBlocksAsCoveredByTest s.history
+        let generatedTestInfo =
+            {
+                isError = isError
+                executionTime = x.CurrentExplorationTime
+                stepsCount = x.StepsCount
+                coverage = x.GetCurrentCoverage()
+            }
+        generatedTestInfos.Add generatedTestInfo
+        Logger.traceWithTag Logger.stateTraceTag $"FINISH: {s.id}"
 
-    member x.IsNewError (s : cilState) (errorMessage : string) =
+    member x.IsNewError (s : cilState) (errorMessage : string) isFatal =
         match s.state.exceptionsRegister with
-        | Unhandled(_, _, stackTrace) -> emittedExceptions.Add(stackTrace, errorMessage)
-        | _ -> emittedErrors.Add(s.ipStack, errorMessage)
+        | Unhandled(_, _, stackTrace) -> emittedExceptions.Add(stackTrace, errorMessage, isFatal)
+        | _ -> emittedErrors.Add(s.ipStack, errorMessage, isFatal)
 
     member x.TrackStepBackward (pob : pob) (cilState : cilState) =
         // TODO
@@ -300,6 +320,8 @@ type public SILIStatistics(entryMethods : Method seq) =
     member x.InternalFails with get() = internalFails
 
     member x.StepsCount with get() = stepsCount
+
+    member x.GeneratedTestInfos with get() : IReadOnlyCollection<generatedTestInfo> = generatedTestInfos
 
     member x.DumpStatistics() =
         let topN = 5

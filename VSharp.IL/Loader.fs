@@ -28,7 +28,7 @@ module Loader =
     let private CSharpUtilsAssembly =
         AssemblyName("VSharp.CSharpUtils").FullName |> AssemblyManager.LoadFromAssemblyName
 
-    let public CSharpImplementations =
+    let internal CSharpImplementations =
         // Loading assembly and collecting methods via VSharp assembly load context,
         // because C# internal calls will be explored by VSharp
         seq [
@@ -43,7 +43,6 @@ module Loader =
             CSharpUtilsAssembly.GetType("VSharp.CSharpUtils.GC")
             CSharpUtilsAssembly.GetType("VSharp.CSharpUtils.DateTimeUtils")
             CSharpUtilsAssembly.GetType("VSharp.CSharpUtils.ThreadUtils")
-            CSharpUtilsAssembly.GetType("VSharp.CSharpUtils.DelegateUtils")
             CSharpUtilsAssembly.GetType("VSharp.CSharpUtils.DiagnosticsUtils")
             CSharpUtilsAssembly.GetType("VSharp.CSharpUtils.CultureInfoUtils")
             CSharpUtilsAssembly.GetType("VSharp.CSharpUtils.DebugProviderUtils")
@@ -55,15 +54,19 @@ module Loader =
     let MethodSequenceBase =
         CSharpUtilsAssembly.GetType("VSharp.CSharpUtils.MethodSequenceUtils").GetMethod("MethodSequenceBase")
 
-    let public FSharpImplementations =
-        // Loading assembly and collecting methods via default assembly load context,
-        // because all VSharp types, like VSharp.Core.state are loaded via default load context,
-        // so F# internal calls (which use state) must be loaded via default load context
-        Assembly.GetExecutingAssembly().GetTypes()
-        |> Array.filter Microsoft.FSharp.Reflection.FSharpType.IsModule
-        |> collectImplementations
+    // Loading assembly and collecting methods via default assembly load context,
+    // because all VSharp types, like VSharp.Core.state are loaded via default load context,
+    // so F# internal calls (which use state) must be loaded via default load context
+    let mutable internal FSharpImplementations : Map<string, MethodInfo> = Map.empty
 
-    let private runtimeExceptionsConstructors =
+    let public SetInternalCallsAssembly (asm : Assembly) =
+        let implementations =
+            asm.GetTypes()
+            |> Array.filter Microsoft.FSharp.Reflection.FSharpType.IsModule
+            |> collectImplementations
+        FSharpImplementations <- implementations
+
+    let internal runtimeExceptionsConstructors =
         // Loading assembly and collecting methods via VSharp assembly load context,
         // because exceptions constructors will be explored by VSharp
         CSharpUtilsAssembly.GetType("VSharp.CSharpUtils.Exceptions")
@@ -73,17 +76,8 @@ module Loader =
     let private runtimeExceptionsImplementations =
         runtimeExceptionsConstructors.Values |> Seq.map Reflection.getFullMethodName |> set
 
-    let mutable public CilStateImplementations : string seq =
-        Seq.empty
-
-    let public hasRuntimeExceptionsImplementation (fullMethodName : string) =
-        Map.containsKey fullMethodName runtimeExceptionsConstructors
-
-    let public isRuntimeExceptionsImplementation (fullMethodName : string) =
+    let internal isRuntimeExceptionsImplementation (fullMethodName : string) =
         Set.contains fullMethodName runtimeExceptionsImplementations
-
-    let public getRuntimeExceptionsImplementation (fullMethodName : string) =
-        runtimeExceptionsConstructors.[fullMethodName]
 
     let private shimImplementations =
         set [
@@ -96,8 +90,14 @@ module Loader =
             // Socket.Read  TODO: writing to the out parameters
         ]
 
-    let public isShimmed (fullMethodName : string) =
+    let internal isShimmed (fullMethodName : string) =
         Set.contains fullMethodName shimImplementations
+
+    let internal trustedIntrinsics =
+        let intPtr = Reflection.getAllMethods typeof<IntPtr> |> Array.map Reflection.getFullMethodName
+        let volatile = Reflection.getAllMethods typeof<System.Threading.Volatile> |> Array.map Reflection.getFullMethodName
+        let defaultComparer = [|"System.Collections.Generic.Comparer`1[T] System.Collections.Generic.Comparer`1[T].get_Default()"|]
+        Array.concat [intPtr; volatile; defaultComparer]
 
     let private concreteInvocations =
         set [
@@ -137,6 +137,7 @@ module Loader =
             "System.RuntimeType System.ModuleHandle.GetModuleType(System.Reflection.RuntimeModule)"
             "System.Type System.RuntimeType.get_DeclaringType(this)"
             "System.String System.RuntimeType.get_Namespace(this)"
+            "System.Boolean System.Type.get_IsAbstract(this)"
 
             // EqualityComparer
             "System.Object System.Collections.Generic.ComparerHelpers.CreateDefaultEqualityComparer(System.Type)"
@@ -183,5 +184,5 @@ module Loader =
             "System.Void VSharp.CSharpUtils.Exceptions.CreateOutOfMemoryException()"
         ]
 
-    let isInvokeInternalCall (fullMethodName : string) =
+    let internal isInvokeInternalCall (fullMethodName : string) =
         concreteInvocations.Contains fullMethodName
