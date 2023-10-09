@@ -16,6 +16,8 @@
     <ItemGroup>
       <Compile Include="Loader.fs" />
       <Compile Include="OpCodes.fs" />
+      <Compile Include="IL.fs" />
+      <Compile Include="StFldAnalyzer.fs" />
       <Compile Include="ILRewriter.fs" />
       <Compile Include="MethodBody.fs" />
       <Compile Include="CFG.fs" />

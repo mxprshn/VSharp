@@ -13,7 +13,10 @@ namespace VSharp.CSharpUtils
         [Implements("System.Boolean System.String.Equals(this, System.String)")]
         public static bool Equals(string str1, string str2)
         {
-            if (str1.Length != str2.Length)
+            if (str1 is null && str2 is null)
+                return true;
+
+            if (str1 is null || str2 is null || str1.Length != str2.Length)
                 return false;
 
             for (var i = 0; i < str1.Length; i++)

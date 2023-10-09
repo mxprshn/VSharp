@@ -84,6 +84,18 @@ public class ClassWithStructCtor
     public int GetTotalValue() => _value + _testStruct.Value;
 }
 
+public class ClassWithField1
+{
+    public int _value;
+}
+
+public class ClassWithField2
+{
+    public ClassWithField1 _value;
+}
+
+
+
 [TestSvmFixture]
 public static class MethodSequences
 {
