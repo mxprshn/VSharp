@@ -21,3 +21,6 @@ type IMethod =
     abstract MethodBase : System.Reflection.MethodBase
     abstract MetadataToken : int
     abstract IsVirtual : bool
+    abstract ResolveOverrideInType : Type -> IMethod
+    abstract CanBeOverriddenInType : Type -> bool
+    abstract IsImplementedInType : Type -> bool

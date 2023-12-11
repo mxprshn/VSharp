@@ -95,6 +95,10 @@ public static class Renderer
             ReadFromResource("VSharp.TestExtensions.Allocator.cs"));
 
         File.WriteAllText(
+            Path.Combine(extensionsFolder.FullName, "GeneratedAttribute.cs"),
+            ReadFromResource("VSharp.TestExtensions.GeneratedAttribute.cs"));
+
+        File.WriteAllText(
             Path.Combine(extensionsFolder.FullName, "ObjectsComparer.cs"),
             ReadFromResource("VSharp.TestExtensions.ObjectsComparer.cs"));
     }
@@ -106,11 +110,16 @@ public static class Renderer
         var allocatorComp = CSharpSyntaxTree.ParseText(allocatorProgram).GetCompilationUnitRoot();
         var comparerProgram = ReadFromResource("VSharp.TestExtensions.ObjectsComparer.cs");
         var comparerComp = CSharpSyntaxTree.ParseText(comparerProgram).GetCompilationUnitRoot();
+        var generatedAttrProgram = ReadFromResource("VSharp.TestExtensions.GeneratedAttribute.cs");
+        var generatedAttrComp = CSharpSyntaxTree.ParseText(generatedAttrProgram).GetCompilationUnitRoot();
 
         return
             MergeCompilations(
                 testsComp,
-                MergeCompilations(allocatorComp, comparerComp)
+                MergeCompilations(
+                    allocatorComp,
+                    MergeCompilations(comparerComp, generatedAttrComp)
+                )
             );
     }
 
@@ -145,7 +154,7 @@ public static class Renderer
         }
 
         // TODO: parse testing project '.csproj' and get target version from there
-        targetFramework ??= "net6.0";
+        targetFramework ??= "net7.0";
 
         // Creating nunit project
         RunDotnet(new ProcessStartInfo
@@ -512,6 +521,9 @@ public static class Renderer
         unitTests = unitTests.FindAll(ut => !ut.HasExternMocks);
         if (unitTests.Count == 0)
             throw new UnexpectedExternCallException("Render is not supported for tests with extern mocks. Nothing to render.");
+        unitTests = unitTests.FindAll(ut => !ut.HasOutMocks);
+        if (unitTests.Count == 0)
+            throw new UnexpectedExternCallException("Render is not supported for tests with out mocks. Nothing to render.");
         var originAssembly = unitTests.First().Method.Module.Assembly;
         var exploredAssembly = AssemblyManager.LoadCopy(originAssembly);
 

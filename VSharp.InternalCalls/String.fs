@@ -28,10 +28,12 @@ module internal String =
     let CtorFromSpan (_ : IInterpreter) (cilState : cilState) (args : term list) : cilState list =
         assert(List.length args = 2)
         let this, span = args[0], args[1]
-        let ref = ReadOnlySpan.GetContentsHeapRef cilState span
+        let ref = ReadOnlySpan.GetContentsRef cilState span
         let len = ReadOnlySpan.GetLength cilState span
-        assert(TypeOf ref |> TypeUtils.isArrayType)
-        let states = Memory.StringCtorOfCharArrayAndLen cilState.state ref this len
+        let state = cilState.state
+        let t = MostConcreteTypeOfRef state ref
+        assert(TypeUtils.isArrayType t || t = typeof<string> || t = typeof<char>)
+        let states = Memory.StringCtorOfCharArrayAndLen state ref this len
         List.map (changeState cilState) states
 
     let CtorFromPtr (i : IInterpreter) (cilState : cilState) (args : term list) =
@@ -46,8 +48,9 @@ module internal String =
             &&& (startIndex >>= zero)
         let copy cilState k =
             let cilStates = writeClassField cilState this Reflection.stringLengthField length
+            let bytesCount = Mul length (MakeNumber sizeof<char>)
             let memMove cilState =
-                Buffer.CommonMemmove cilState this None ptr (Some startIndex) length
+                Buffer.CommonMemmove cilState this None ptr (Some startIndex) bytesCount
             List.collect memMove cilStates |> k
         let checkPtr cilState k =
             StatedConditionalExecutionCIL cilState
@@ -159,4 +162,9 @@ module internal String =
             let char = Memory.ReadStringChar cilState.state this index
             push char cilState
             List.singleton cilState |> k
-        interpreter.AccessArray getChar cilState length index id
+        let arrayLength = Add length (MakeNumber 1)
+        interpreter.AccessArray getChar cilState arrayLength index id
+
+    let AllCharsInUInt32AreAscii (_ : state) (_ : term list) =
+        // TODO: try to not internal call it
+        MakeBool true

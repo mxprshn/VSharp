@@ -38,10 +38,38 @@ module Runtime_CompilerServices_RuntimeHelpers =
 
     let Equals (_ : state) (args : term list) : term =
         assert(List.length args = 2)
-        let x, y = args.[0], args.[1]
+        let x, y = args[0], args[1]
+        x === y
+
+    let EnumEquals (_ : state) (args : term list) =
+        assert(List.length args = 3)
+        let x, y = args[1], args[2]
         x === y
 
     let RunStaticCtor (_ : IInterpreter) (cilState : cilState) (args : term list) =
         assert(List.length args = 1)
         // TODO: initialize statics of argument
         List.singleton cilState
+
+    let TryEnsureSufficientExecutionStack (_ : state) (args : term list) =
+        assert(List.length args = 0)
+        // 'True' value leads to more runtime optimizations code exploration
+        MakeBool true
+
+    let EnsureSufficientExecutionStack (_ : state) (args : term list) =
+        assert(List.length args = 0)
+        Nop()
+
+    let ExceptionGetSource (state : state) (args : term list) =
+        assert(List.length args = 1)
+        let exceptionRef = args[0]
+        let t = MostConcreteTypeOfRef state exceptionRef
+        Memory.AllocateString (t.ToString()) state
+
+    let BadImageFormatExceptionToString (state : state) (args : term list) =
+        assert(List.length args = 1)
+        Memory.AllocateString "BadImageFormatException" state
+
+    let BadImageFormatExceptionGetMessage (state : state) (args : term list) =
+        assert(List.length args = 1)
+        Memory.AllocateString "BadImageFormatException" state

@@ -1,6 +1,7 @@
 namespace VSharp.Solver
 
 open System
+open System.Text
 open Microsoft.Z3
 open System.Collections.Generic
 open VSharp
@@ -81,6 +82,12 @@ module internal Z3 =
         static member Empty with get() =
             { parts = List.empty }
 
+        override x.ToString() =
+            let mutable sb = StringBuilder()
+            for p in x.parts do
+                sb <- sb.Append(p.ToString())
+            sb.ToString()
+
     module private Path =
 
         let rec (|Path|_|) (src : ISymbolicConstantSource) =
@@ -108,6 +115,8 @@ module internal Z3 =
         heapAddresses : IDictionary<Expr, vectorTime>
         staticKeys : IDictionary<Expr, Type>
         regionConstants : Dictionary<regionSort * path, ArrayExpr>
+        defaultValues : IDictionary<regionSort, HashSet<Expr[]>>
+        funcDecls : IDictionary<string * Sort[] * Sort, FuncDecl>
         mutable lastSymbolicAddress : int32
     } with
         member x.Get(term, encoder : unit -> Expr) =
@@ -130,6 +139,8 @@ module internal Z3 =
         heapAddresses = Dictionary<Expr, vectorTime>()
         staticKeys = Dictionary<Expr, Type>()
         regionConstants = Dictionary<regionSort * path, ArrayExpr>()
+        defaultValues = Dictionary<regionSort, HashSet<Expr[]>>()
+        funcDecls = Dictionary<string * Sort[] * Sort, FuncDecl>()
         lastSymbolicAddress = 0
     }
 
@@ -148,6 +159,24 @@ module internal Z3 =
                 encodingCache.regionConstants.Add(typ, regConst)
                 regConst
 
+        let getDefaultValues (regionSort : regionSort) =
+            let result : HashSet<Expr[]> ref = ref null
+            if encodingCache.defaultValues.TryGetValue(regionSort, result) then result.Value
+            else
+                let suitableKeys = HashSet<Expr[]>()
+                encodingCache.defaultValues.Add(regionSort, suitableKeys)
+                suitableKeys
+
+        let getFuncDecl (name : string) (argsSort : Sort[]) (resultSort : Sort) =
+            let result : FuncDecl ref = ref null
+            let key = name, argsSort, resultSort
+            if encodingCache.funcDecls.TryGetValue(key, result) then result.Value
+            else
+                let funcDecl = ctx.MkFuncDecl(name, argsSort, resultSort)
+                encodingCache.funcDecls.Add(key, funcDecl)
+                funcDecl
+
+        let RoundNearest = ctx.MkFPRoundNearestTiesToEven()
         let TrueExpr = ctx.MkTrue()
         let FalseExpr = ctx.MkFalse()
 
@@ -173,13 +202,20 @@ module internal Z3 =
 
         member private x.AddressSort = ctx.MkBitVecSort(32u) :> Sort
 
+        member private x.SizeOfBV (typ : Type) : uint =
+            match typ with
+            | typ when isNumeric typ -> numericBitSizeOf typ
+            | AddressType -> 32u
+            | _ -> __unreachable__()
+
         member private x.Type2Sort typ =
             Dict.getValueOrUpdate encodingCache.sorts typ (fun () ->
                 match typ with
                 | Bool -> ctx.MkBoolSort() :> Sort
                 | typ when typ.IsEnum -> ctx.MkBitVecSort(numericBitSizeOf typ) :> Sort
-                | typ when Types.isIntegral typ -> ctx.MkBitVecSort(numericBitSizeOf typ) :> Sort
-                | typ when Types.IsReal typ -> failToEncode "encoding real numbers is not implemented"
+                | typ when isIntegral typ -> ctx.MkBitVecSort(numericBitSizeOf typ) :> Sort
+                | typ when typ = typeof<single> -> ctx.MkFPSort32() :> Sort
+                | typ when typ = typeof<double> -> ctx.MkFPSort64() :> Sort
                 | AddressType -> x.AddressSort
                 | StructType _ -> internalfailf "struct should not appear while encoding! type: %O" typ
                 | Numeric _ -> __notImplemented__()
@@ -195,8 +231,8 @@ module internal Z3 =
             if sort = ctx.BoolSort then ctx.MkFalse() :> Expr
             else ctx.MkNumeral(0, sort)
 
-        member private x.EncodeConcreteAddress encCtx (address : concreteHeapAddress) =
-            let encoded = ctx.MkNumeral(encCtx.addressOrder[address], x.Type2Sort addressType)
+        member private x.EncodeConcreteAddress (address : concreteHeapAddress) =
+            let encoded = ctx.MkNumeral(VectorTime.extractFromSingleton address, x.Type2Sort addressType)
             encodingCache.heapAddresses[encoded] <- address
             encoded
 
@@ -275,6 +311,7 @@ module internal Z3 =
             match cond, thenExpr, elseExpr with
             | True, _, _ -> thenExpr
             | False, _, _ -> elseExpr
+            | _ when thenExpr = elseExpr -> thenExpr
             | _, (:? BitVecExpr as thenExpr), (:? BitVecExpr as elseExpr) ->
                 let thenExpr, elseExpr = x.ExtendIfNeed (thenExpr, elseExpr) true
                 ctx.MkITE(cond, thenExpr, elseExpr)
@@ -289,6 +326,28 @@ module internal Z3 =
                 let extend = if isSigned then ctx.MkSignExt else ctx.MkZeroExt
                 if difference > 0 then x, extend(uint32 difference, y)
                 else extend(uint32 -difference, x), y
+
+        member private this.ChangeSize (x : BitVecExpr) size isSigned =
+            let xSize = int x.SortSize
+            let xDiff = size - xSize
+            if xDiff = 0 then x
+            elif xDiff > 0 then
+                let extend = if isSigned then ctx.MkSignExt else ctx.MkZeroExt
+                extend(uint32 xDiff, x)
+            else
+                let from = size - 1
+                ctx.MkExtract(uint32 from, 0u, x)
+
+        member private this.ChangeSizeIfNeed (x : BitVecExpr, y : BitVecExpr as args) typ =
+            let size = numericBitSizeOf typ |> int
+            let xSize = int x.SortSize
+            let ySize = int y.SortSize
+            if xSize = ySize && xSize = size then args
+            else
+                let isSigned = isSigned typ
+                let x = this.ChangeSize x size isSigned
+                let y = this.ChangeSize y size isSigned
+                x, y
 
         member private x.MkEq(left : Expr, right : Expr) =
             match left, right with
@@ -337,23 +396,35 @@ module internal Z3 =
             | _ when left = right -> TrueExpr
             | _ -> x.ExtendIfNeed operands false |> ctx.MkBVULE
 
-        member private x.MkBVAnd operands : BitVecExpr =
-            x.ExtendIfNeed operands false |> ctx.MkBVAND
+        member private x.MkBVAndT typ operands : BitVecExpr =
+            x.ChangeSizeIfNeed operands typ |> ctx.MkBVAND
+
+        member private x.MkBVOrT typ operands : BitVecExpr =
+            x.ChangeSizeIfNeed operands typ |> ctx.MkBVOR
 
         member private x.MkBVOr operands : BitVecExpr =
             x.ExtendIfNeed operands false |> ctx.MkBVOR
 
-        member private x.MkBVXor operands : BitVecExpr =
-            x.ExtendIfNeed operands false |> ctx.MkBVXOR
+        member private x.MkBVXorT typ operands : BitVecExpr =
+            x.ChangeSizeIfNeed operands typ |> ctx.MkBVXOR
+
+        member private x.MkBVShlT typ operands : BitVecExpr =
+            x.ChangeSizeIfNeed operands typ |> ctx.MkBVSHL
 
         member private x.MkBVShl operands : BitVecExpr =
             x.ExtendIfNeed operands true |> ctx.MkBVSHL
 
-        member private x.MkBVAShr operands : BitVecExpr =
-            x.ExtendIfNeed operands true |> ctx.MkBVASHR
+        member private x.MkBVAShrT typ operands : BitVecExpr =
+            x.ChangeSizeIfNeed operands typ |> ctx.MkBVASHR
+
+        member private x.MkBVLShrT typ operands : BitVecExpr =
+            x.ChangeSizeIfNeed operands typ |> ctx.MkBVLSHR
 
         member private x.MkBVLShr operands : BitVecExpr =
             x.ExtendIfNeed operands true |> ctx.MkBVLSHR
+
+        member private x.MkBVAddT typ operands : BitVecExpr =
+            x.ChangeSizeIfNeed operands typ |> ctx.MkBVAdd
 
         member private x.MkBVAdd operands : BitVecExpr =
             x.ExtendIfNeed operands true |> ctx.MkBVAdd
@@ -365,6 +436,9 @@ module internal Z3 =
             let left, right = x.ExtendIfNeed operands true
             ctx.MkBVAddNoOverflow(left, right, true)
 
+        member private x.MkBVMulT typ operands : BitVecExpr =
+            x.ChangeSizeIfNeed operands typ |> ctx.MkBVMul
+
         member private x.MkBVMul operands : BitVecExpr =
             x.ExtendIfNeed operands true |> ctx.MkBVMul
 
@@ -375,20 +449,27 @@ module internal Z3 =
             let left, right = x.ExtendIfNeed operands true
             ctx.MkBVMulNoOverflow(left, right, true)
 
+        member private x.MkBVSubT typ operands : BitVecExpr =
+            x.ChangeSizeIfNeed operands typ |> ctx.MkBVSub
+
         member private x.MkBVSub operands : BitVecExpr =
             x.ExtendIfNeed operands true |> ctx.MkBVSub
 
-        member private x.MkBVSDiv operands : BitVecExpr =
-            x.ExtendIfNeed operands true |> ctx.MkBVSDiv
+        member private x.MkBVSDivT typ operands : BitVecExpr =
+            assert(isSigned typ)
+            x.ChangeSizeIfNeed operands typ |> ctx.MkBVSDiv
 
-        member private x.MkBVUDiv operands : BitVecExpr =
-            x.ExtendIfNeed operands false |> ctx.MkBVUDiv
+        member private x.MkBVUDivT typ operands : BitVecExpr =
+            assert(isUnsigned typ)
+            x.ChangeSizeIfNeed operands typ |> ctx.MkBVUDiv
 
-        member private x.MkBVSRem operands : BitVecExpr =
-            x.ExtendIfNeed operands true |> ctx.MkBVSRem
+        member private x.MkBVSRemT typ operands : BitVecExpr =
+            assert(isSigned typ)
+            x.ChangeSizeIfNeed operands typ |> ctx.MkBVSRem
 
-        member private x.MkBVURem operands : BitVecExpr =
-            x.ExtendIfNeed operands false |> ctx.MkBVURem
+        member private x.MkBVURemT typ operands : BitVecExpr =
+            assert(isUnsigned typ)
+            x.ChangeSizeIfNeed operands typ |> ctx.MkBVURem
 
         member private x.Max (left : BitVecExpr) (right : BitVecExpr) =
             assert(left.SortSize = right.SortSize)
@@ -398,98 +479,184 @@ module internal Z3 =
             assert(left.SortSize = right.SortSize)
             x.MkITE(x.MkBVSGT(left, right), right, left) :?> BitVecExpr
 
+// ------------------------------- Floating point arithmetic simplifications -------------------------------
+
+        member private x.MkFPGt(left : FPExpr, right : FPExpr as operands) : BoolExpr =
+            assert(left.Sort = right.Sort)
+            match left, right with
+            | _ when left = right -> FalseExpr
+            | _ -> operands |> ctx.MkFPGt
+
+        member private x.MkFPGEq(left : FPExpr, right : FPExpr as operands) : BoolExpr =
+            assert(left.Sort = right.Sort)
+            match left, right with
+            | _ when left = right -> TrueExpr
+            | _ -> operands |> ctx.MkFPGEq
+
+        member private x.MkFPLt(left : FPExpr, right : FPExpr as operands) : BoolExpr =
+            assert(left.Sort = right.Sort)
+            match left, right with
+            | _ when left = right -> FalseExpr
+            | _ -> operands |> ctx.MkFPLt
+
+        member private x.MkFPLEq(left : FPExpr, right : FPExpr as operands) : BoolExpr =
+            assert(left.Sort = right.Sort)
+            match left, right with
+            | _ when left = right -> TrueExpr
+            | _ -> operands |> ctx.MkFPLEq
+
+        member private x.MkFPAdd(left : FPExpr, right : FPExpr) : FPExpr =
+            assert(left.Sort = right.Sort)
+            ctx.MkFPAdd(RoundNearest, left, right)
+
+        member private x.MkFPMul(left : FPExpr, right : FPExpr) : FPExpr =
+            assert(left.Sort = right.Sort)
+            ctx.MkFPMul(RoundNearest, left, right)
+
+        member private x.MkFPSub(left : FPExpr, right : FPExpr) : FPExpr =
+            assert(left.Sort = right.Sort)
+            ctx.MkFPSub(RoundNearest, left, right)
+
+        member private x.MkFPDiv(left : FPExpr, right : FPExpr) : FPExpr =
+            assert(left.Sort = right.Sort)
+            ctx.MkFPDiv(RoundNearest, left, right)
+
+        member private x.MkFPRem(left : FPExpr, right : FPExpr as operands) : FPExpr =
+            assert(left.Sort = right.Sort)
+            ctx.MkFPRem operands
+
 // ------------------------------- Encoding: common -------------------------------
 
-        member public x.EncodeTerm encCtx (t : term) : encodingResult =
+        member public x.EncodeTerm (t : term) : encodingResult =
             let getResult () =
                 let result =
                     match t.term with
-                    | Concrete(obj, typ) -> x.EncodeConcrete encCtx obj typ
-                    | Constant(name, source, typ) -> x.EncodeConstant encCtx name.v source typ
-                    | Expression(op, args, typ) -> x.EncodeExpression encCtx t op args typ
-                    | HeapRef(address, _) -> x.EncodeTerm encCtx address
+                    | Concrete(obj, typ) -> x.EncodeConcrete obj typ
+                    | Constant(name, source, typ) -> x.EncodeConstant name.v source typ
+                    | Expression(op, args, typ) -> x.EncodeExpression t op args typ
+                    | HeapRef(address, _) -> x.EncodeTerm address
                     | _ -> internalfail $"EncodeTerm: unexpected term: {t}"
                 let typ = TypeOf t
-                let result = if typ.IsEnum then x.AddEnumAssumptions encCtx typ result else result
+                let result = if typ.IsEnum then x.AddEnumAssumptions typ result else result
                 { result with assumptions = x.SimplifyAndElements result.assumptions |> List.ofSeq }
             encodingCache.Get(t, getResult)
 
-        member private x.AddEnumAssumptions encCtx typ (encodingResult : encodingResult) =
+        member private x.AddEnumAssumptions typ (encodingResult : encodingResult) =
+            // TODO: support "Flags"
             assert typ.IsEnum
             let expr = encodingResult.expr
             let values = Enum.GetValues typ |> System.Linq.Enumerable.OfType<obj>
             let createAssumption assumptions value =
-                let assumptions', concrete = x.EncodeConcrete encCtx value typ |> toTuple
+                let assumptions', concrete = x.EncodeConcrete value typ |> toTuple
                 x.MkEq(expr, concrete), assumptions @ assumptions'
             let options, assumptions = Seq.mapFold createAssumption encodingResult.assumptions values
             let enumAssumptions = x.MkOr options
             {expr = expr; assumptions = enumAssumptions :: assumptions}
 
-        member private x.EncodeConcrete encCtx (obj : obj) typ : encodingResult =
+        member private x.EncodeConcrete (obj : obj) typ : encodingResult =
             let expr =
                 match typ with
-                | Bool -> ctx.MkBool(obj :?> bool) :> Expr
-                | t when t = typeof<char> -> ctx.MkNumeral(Convert.ToInt32(obj :?> char) |> toString, x.Type2Sort typ)
-                | t when t.IsEnum -> ctx.MkNumeral(Convert.ChangeType(obj, EnumUtils.getEnumUnderlyingTypeChecked t) |> toString, x.Type2Sort typ)
-                | Numeric _ -> ctx.MkNumeral(toString obj, x.Type2Sort typ)
+                | Bool ->
+                    ctx.MkBool(obj :?> bool) :> Expr
+                | t when t = typeof<char> ->
+                    let num = Convert.ToInt32(obj :?> char)
+                    ctx.MkNumeral(num, x.Type2Sort typ)
+                | t when t.IsEnum ->
+                    let num = Convert.ChangeType(obj, EnumUtils.getEnumUnderlyingTypeChecked t)
+                    ctx.MkNumeral(num.ToString(), x.Type2Sort typ)
+                | Numeric t when t = typeof<float32> ->
+                    let sort = x.Type2Sort typ :?> FPSort
+                    ctx.MkFPNumeral(obj :?> float32, sort)
+                | Numeric t when t = typeof<float> ->
+                    let sort = x.Type2Sort typ :?> FPSort
+                    ctx.MkFPNumeral(obj :?> float, sort)
+                | Numeric _ ->
+                    ctx.MkNumeral(toString obj, x.Type2Sort typ)
                 | AddressType ->
                     match obj with
                     | :? concreteHeapAddress as address ->
                         assert(List.isEmpty address |> not)
-                        x.EncodeConcreteAddress encCtx address
+                        x.EncodeConcreteAddress address
                     | _ -> __unreachable__()
                 | _ -> __notImplemented__()
             encodingResult.Create expr
 
-        member private x.EncodeConstant encCtx name (source : ISymbolicConstantSource) typ : encodingResult =
+        member private x.EncodeConstant name (source : ISymbolicConstantSource) typ : encodingResult =
             match source with
             | :? IMemoryAccessConstantSource as source ->
-                x.EncodeMemoryAccessConstant encCtx name source path.Empty typ
+                x.EncodeMemoryAccessConstant name source path.Empty typ
             | _ -> x.CreateConstant name typ
 
 // ------------------------------- Encoding: expression -------------------------------
 
-        member private x.EncodeOperation encCtx operation args =
+        member private x.EncodeOperation operation args typ =
+            match args with
+            | arg :: rest when TypeOf arg |> isReal ->
+                assert(List.forall (TypeOf >> isReal) rest)
+                x.EncodeOperationFP operation args
+            | _ -> x.EncodeOperationBV operation args typ
+
+        member private x.EncodeOperationBV operation args typ =
             match operation with
-            | OperationType.BitwiseNot -> x.MakeUnary encCtx ctx.MkBVNot args
-            | OperationType.BitwiseAnd -> x.MakeBinary encCtx x.MkBVAnd args
-            | OperationType.BitwiseOr -> x.MakeBinary encCtx x.MkBVOr args
-            | OperationType.BitwiseXor -> x.MakeBinary encCtx x.MkBVXor args
+            | OperationType.Equal -> x.MakeBinary x.MkEq args
+            | OperationType.NotEqual -> x.MakeBinary (x.MkNot << x.MkEq) args
+            | OperationType.BitwiseNot -> x.MakeUnary ctx.MkBVNot args
+            | OperationType.BitwiseAnd -> x.MakeBinary (x.MkBVAndT typ) args
+            | OperationType.BitwiseOr -> x.MakeBinary (x.MkBVOrT typ) args
+            | OperationType.BitwiseXor -> x.MakeBinary (x.MkBVXorT typ) args
             // [NOTE] IL specifies: arguments of SHL, SHR, SHR.UN are (int32 and int32), (int64 and int32)
             // So it's needed to extend one of them for Z3
-            | OperationType.ShiftLeft -> x.MakeBinary encCtx x.MkBVShl args
-            | OperationType.ShiftRight -> x.MakeBinary encCtx x.MkBVAShr args
-            | OperationType.ShiftRight_Un -> x.MakeBinary encCtx x.MkBVLShr args
-            | OperationType.LogicalNot -> x.MakeUnary encCtx x.MkNot args
-            | OperationType.LogicalAnd -> x.MakeOperation encCtx x.MkAnd args
-            | OperationType.LogicalOr -> x.MakeOperation encCtx x.MkOr args
-            | OperationType.LogicalXor -> x.MakeOperation encCtx ctx.MkXor args
-            | OperationType.Equal -> x.MakeBinary encCtx x.MkEq args
-            | OperationType.NotEqual -> x.MakeBinary encCtx (x.MkNot << x.MkEq) args
-            | OperationType.Greater -> x.MakeBinary encCtx x.MkBVSGT args
-            | OperationType.Greater_Un -> x.MakeBinary encCtx x.MkBVUGT args
-            | OperationType.GreaterOrEqual -> x.MakeBinary encCtx x.MkBVSGE args
-            | OperationType.GreaterOrEqual_Un -> x.MakeBinary encCtx x.MkBVUGE args
-            | OperationType.Less -> x.MakeBinary encCtx x.MkBVSLT args
-            | OperationType.Less_Un -> x.MakeBinary encCtx x.MkBVULT args
-            | OperationType.LessOrEqual -> x.MakeBinary encCtx x.MkBVSLE args
-            | OperationType.LessOrEqual_Un -> x.MakeBinary encCtx x.MkBVULE args
-            | OperationType.Add -> x.MakeBinary encCtx x.MkBVAdd args
+            | OperationType.ShiftLeft -> x.MakeBinary (x.MkBVShlT typ) args
+            | OperationType.ShiftRight -> x.MakeBinary (x.MkBVAShrT typ) args
+            | OperationType.ShiftRight_Un -> x.MakeBinary (x.MkBVLShrT typ) args
+            | OperationType.LogicalNot -> x.MakeUnary x.MkNot args
+            | OperationType.LogicalAnd -> x.MakeOperation x.MkAnd args
+            | OperationType.LogicalOr -> x.MakeOperation x.MkOr args
+            | OperationType.LogicalXor -> x.MakeOperation ctx.MkXor args
+            | OperationType.Greater -> x.MakeBinary x.MkBVSGT args
+            | OperationType.Greater_Un -> x.MakeBinary x.MkBVUGT args
+            | OperationType.GreaterOrEqual -> x.MakeBinary x.MkBVSGE args
+            | OperationType.GreaterOrEqual_Un -> x.MakeBinary x.MkBVUGE args
+            | OperationType.Less -> x.MakeBinary x.MkBVSLT args
+            | OperationType.Less_Un -> x.MakeBinary x.MkBVULT args
+            | OperationType.LessOrEqual -> x.MakeBinary x.MkBVSLE args
+            | OperationType.LessOrEqual_Un -> x.MakeBinary x.MkBVULE args
+            | OperationType.Add -> x.MakeBinary (x.MkBVAddT typ) args
             | OperationType.AddNoOvf ->
                 let operation (l, r) =
                     x.MkAnd(x.MkBVAddNoUnderflow(l, r), x.MkBVAddNoOverflow(l, r))
-                x.MakeBinary encCtx operation args
-            | OperationType.Multiply -> x.MakeBinary encCtx x.MkBVMul args
+                x.MakeBinary operation args
+            | OperationType.Multiply -> x.MakeBinary (x.MkBVMulT typ) args
             | OperationType.MultiplyNoOvf ->
                 let operation (l, r) =
                     x.MkAnd(x.MkBVMulNoUnderflow(l, r), x.MkBVMulNoOverflow(l, r))
-                x.MakeBinary encCtx operation args
-            | OperationType.Subtract -> x.MakeBinary encCtx x.MkBVSub args
-            | OperationType.Divide -> x.MakeBinary encCtx x.MkBVSDiv args
-            | OperationType.Divide_Un -> x.MakeBinary encCtx x.MkBVUDiv args
-            | OperationType.Remainder -> x.MakeBinary encCtx x.MkBVSRem args
-            | OperationType.Remainder_Un -> x.MakeBinary encCtx x.MkBVURem args
-            | OperationType.UnaryMinus -> x.MakeUnary encCtx ctx.MkBVNeg args
+                x.MakeBinary operation args
+            | OperationType.Subtract -> x.MakeBinary (x.MkBVSubT typ) args
+            | OperationType.Divide -> x.MakeBinary (x.MkBVSDivT typ) args
+            | OperationType.Divide_Un -> x.MakeBinary (x.MkBVUDivT typ) args
+            | OperationType.Remainder -> x.MakeBinary (x.MkBVSRemT typ) args
+            | OperationType.Remainder_Un -> x.MakeBinary (x.MkBVURemT typ) args
+            | OperationType.UnaryMinus -> x.MakeUnary ctx.MkBVNeg args
+            | _ -> __unreachable__()
+
+        member private x.EncodeOperationFP operation args =
+            match operation with
+            | OperationType.Equal -> x.MakeBinary ctx.MkEq args
+            | OperationType.NotEqual -> x.MakeBinary (x.MkNot << ctx.MkEq) args
+            | OperationType.Greater
+            | OperationType.Greater_Un -> x.MakeBinary x.MkFPGt args
+            | OperationType.GreaterOrEqual
+            | OperationType.GreaterOrEqual_Un -> x.MakeBinary x.MkFPGEq args
+            | OperationType.Less
+            | OperationType.Less_Un -> x.MakeBinary x.MkFPLt args
+            | OperationType.LessOrEqual
+            | OperationType.LessOrEqual_Un -> x.MakeBinary x.MkFPLEq args
+            | OperationType.Add -> x.MakeBinary x.MkFPAdd args
+            | OperationType.Multiply -> x.MakeBinary x.MkFPMul args
+            | OperationType.Subtract -> x.MakeBinary x.MkFPSub args
+            | OperationType.Divide -> x.MakeBinary x.MkFPDiv args
+            | OperationType.Remainder -> x.MakeBinary x.MkFPRem args
+            | OperationType.UnaryMinus -> x.MakeUnary ctx.MkFPNeg args
             | _ -> __unreachable__()
 
         member private x.ExtractOrExtend (expr : BitVecExpr) size =
@@ -524,19 +691,45 @@ module internal Z3 =
                 assumptions, newLeft, newRight, newPos
             List.foldBack addBounds cuts (assumptions, zero, sizeExpr, zero)
 
-        // TODO: make code better
-        member private x.EncodeCombine encCtx slices typ =
-            let res = ctx.MkNumeral(0, x.Type2Sort typ) :?> BitVecExpr
+        member private x.EncodeBoolBitVec (b : BoolExpr) =
+            assert(sizeof<bool> = sizeof<byte>)
+            let trueBitVec = ctx.MkNumeral(1, x.Type2Sort typeof<byte>)
+            let falseBitVec = ctx.MkNumeral(0, x.Type2Sort typeof<byte>)
+            x.MkITE(b, trueBitVec, falseBitVec) :?> BitVecExpr
+
+        member private x.CreateCombineResult result typ size =
+            if isReal typ then
+                let signStart, signEnd, expStart, expEnd, sigStart, sigEnd =
+                    if typ = typeof<single> then
+                        assert(size = 32u)
+                        31u, 31u, 30u, 23u, 22u, 0u
+                    else
+                        assert(size = 64u && typ = typeof<double>)
+                        63u, 63u, 62u, 52u, 51u, 0u
+                let signExpr = ctx.MkExtract(signStart, signEnd, result)
+                let expExpr = ctx.MkExtract(expStart, expEnd, result)
+                let sigExpr = ctx.MkExtract(sigStart, sigEnd, result)
+                ctx.MkFP(signExpr, expExpr, sigExpr) :> Expr
+            else result :> Expr
+
+        member private x.EncodeCombine slices typ =
+            let size = x.SizeOfBV typ
+            let res = ctx.MkBV(0, size)
             let window = res.SortSize
             let windowExpr = ctx.MkNumeral(window, x.Type2Sort(Types.IndexType)) :?> BitVecExpr
             let addOneSlice (res, assumptions) slice =
                 let term, cuts =
                     match slice.term with
                     | Slice(term, cuts) ->
-                        let slices = List.map (fun (s, e, pos) -> x.EncodeTerm encCtx s, x.EncodeTerm encCtx e, x.EncodeTerm encCtx pos) cuts
-                        x.EncodeTerm encCtx term, slices
-                    | _ -> x.EncodeTerm encCtx slice, List.empty
-                let t = term.expr :?> BitVecExpr
+                        let slices = List.map (fun (s, e, pos) -> x.EncodeTerm s, x.EncodeTerm e, x.EncodeTerm pos) cuts
+                        x.EncodeTerm term, slices
+                    | _ -> x.EncodeTerm slice, List.empty
+                let t =
+                    match term.expr with
+                    | :? BitVecExpr as bv -> bv
+                    | :? BoolExpr as b -> x.EncodeBoolBitVec b
+                    | :? FPExpr as fp -> ctx.MkFPToIEEEBV fp
+                    | _ -> internalfail $"EncodeCombine: unexpected slice term {term}"
                 let assumptions = assumptions @ term.assumptions
                 let termSize = t.SortSize
                 let sizeExpr = ctx.MkBV(termSize, termSize)
@@ -567,152 +760,124 @@ module internal Z3 =
                 let res = x.MkITE(intersects, x.MkBVOr(res, part), res) :?> BitVecExpr
                 res, assumptions
             let result, assumptions = List.fold addOneSlice (res, List.empty) slices
-            {expr = x.ReverseBytes result; assumptions = assumptions}
+            let result = x.ReverseBytes result
+            let result = x.CreateCombineResult result typ size
+            {expr = result; assumptions = assumptions}
 
-        member private x.EncodeExpression encCtx term op args typ =
+        member private x.EncodeApplication sf typ (args : Expr array) =
+            let argsSort = args |> Array.map (fun arg -> arg.Sort)
+            let name = sf.ToString()
+            let resultSort = x.Type2Sort typ
+            let decl = getFuncDecl name argsSort resultSort
+            ctx.MkApp(decl, args)
+
+        member private x.EncodeExpression term op args typ =
             encodingCache.Get(term, fun () ->
                 match op with
                 | Operator operation ->
-                    x.EncodeOperation encCtx operation args
+                    x.EncodeOperation operation args typ
                 | Application sf ->
-                    let decl = ctx.MkConstDecl(sf |> toString |> IdGenerator.startingWith, x.Type2Sort typ)
-                    x.MakeOperation encCtx (fun x -> ctx.MkApp(decl, x)) args
-                | Cast(Numeric t1, Numeric t2) when isReal t1 || isReal t2 ->
-                    failToEncode "encoding real numbers is not implemented"
+                    x.MakeOperation (x.EncodeApplication sf typ) args
+                | Cast(Numeric t1, Numeric t2) when isReal t1 && isReal t2 ->
+                    let arg = x.EncodeTerm (List.head args)
+                    let sort = x.Type2Sort t2 :?> FPSort
+                    let res = ctx.MkFPToFP(RoundNearest, arg.expr :?> FPExpr, sort)
+                    {expr = res; assumptions = arg.assumptions}
+                | Cast(Numeric t1, Numeric t2) when isReal t1 ->
+                    let arg = x.EncodeTerm (List.head args)
+                    let size = numericBitSizeOf t2
+                    let sign = isSigned t2
+                    let res = ctx.MkFPToBV(RoundNearest, arg.expr :?> FPExpr, size, sign)
+                    {expr = res; assumptions = arg.assumptions}
+                | Cast(Numeric t1, Numeric t2) when isReal t2 ->
+                    let arg = x.EncodeTerm (List.head args)
+                    let argExpr = arg.expr :?> BitVecExpr
+                    let sort = x.Type2Sort t2
+                    let sign = isSigned t1
+                    let res = ctx.MkFPToFP(RoundNearest, argExpr, sort :?> FPSort, sign)
+                    {expr = res; assumptions = arg.assumptions}
                 | Cast(Numeric t1, Numeric t2) when isLessForNumericTypes t1 t2 ->
-                    let expr = x.EncodeTerm encCtx (List.head args)
+                    let expr = x.EncodeTerm (List.head args)
                     let difference = numericBitSizeOf t2 - numericBitSizeOf t1
-                    let extend = if isUnsigned t1 then ctx.MkZeroExt else ctx.MkSignExt
+                    let extend = if isUnsigned t2 then ctx.MkZeroExt else ctx.MkSignExt
                     {expr = extend(difference, expr.expr :?> BitVecExpr); assumptions = expr.assumptions}
                 | Cast(Numeric t1, Numeric t2) when isLessForNumericTypes t2 t1 ->
-                    let expr = x.EncodeTerm encCtx (List.head args)
+                    let expr = x.EncodeTerm (List.head args)
                     let from = numericBitSizeOf t2 - 1u
                     {expr = ctx.MkExtract(from, 0u, expr.expr :?> BitVecExpr); assumptions = expr.assumptions}
                 | Cast(Numeric t1, Numeric t2) when numericBitSizeOf t1 = numericBitSizeOf t2 ->
-                    x.EncodeTerm encCtx (List.head args)
+                    x.EncodeTerm (List.head args)
                 | Cast(Bool, Numeric t) ->
-                    let arg = x.EncodeTerm encCtx (List.head args)
+                    let arg = x.EncodeTerm (List.head args)
                     let expr = arg.expr :?> BoolExpr
                     let sort = x.Type2Sort(t)
                     let converted = x.MkITE(expr, ctx.MkNumeral(1, sort), ctx.MkNumeral(0, sort))
                     {expr = converted; assumptions = arg.assumptions}
+                | Cast(Numeric t, Bool) ->
+                    let arg = x.EncodeTerm (List.head args)
+                    let expr = arg.expr :?> BitVecExpr
+                    let sort = x.Type2Sort(t)
+                    let converted = x.MkEq(expr, ctx.MkNumeral(0, sort)) |> x.MkNot
+                    {expr = converted; assumptions = arg.assumptions}
                 | Cast(fromType, toType) ->
                     internalfail $"EncodeExpression: encoding of term {term} from {fromType} to {toType} is not supported"
-                | Combine -> x.EncodeCombine encCtx args typ)
+                | Combine -> x.EncodeCombine args typ)
 
         member private this.MakeUnary<'a, 'b when 'a :> Expr and 'a : equality and 'b :> Expr and 'b : equality>
-                (encCtx : encodingContext)
                 (constructor : 'a -> 'b)
                 (args : term list) : encodingResult =
             match args with
             | [x] ->
-                let result = this.EncodeTerm encCtx x
+                let result = this.EncodeTerm x
                 {expr = constructor (result.expr :?> 'a); assumptions = result.assumptions}
             | _ -> internalfail "unary operation should have exactly one argument"
 
         member private this.MakeBinary<'a, 'b, 'c when 'a :> Expr and 'a : equality and 'b :> Expr and 'b : equality and 'c :> Expr and 'c : equality>
-                (encCtx : encodingContext)
                 (constructor : 'a * 'b -> 'c)
                 (args : term list) : encodingResult =
             match args with
             | [x; y] ->
-                let x' = this.EncodeTerm encCtx x
-                let y' = this.EncodeTerm encCtx y
+                let x' = this.EncodeTerm x
+                let y' = this.EncodeTerm y
                 {expr = constructor(x'.expr :?> 'a, y'.expr :?> 'b); assumptions = x'.assumptions @ y'.assumptions}
             | _ -> internalfail "binary operation should have exactly two arguments"
 
         member private this.MakeOperation<'a, 'b when 'a :> Expr and 'a : equality and 'b :> Expr and 'b : equality>
-                (encCtx : encodingContext)
                 (constructor : 'a [] -> 'b)
                 (args : term list) : encodingResult =
-            let assumptions, expressions = this.EncodeTerms encCtx args
+            let assumptions, expressions = this.EncodeTerms args
             {expr = constructor expressions; assumptions = assumptions}
 
-        member internal x.EncodeTerms<'a when 'a :> Expr and 'a : equality> encCtx (ts : term seq) : BoolExpr list * 'a array =
+        member internal x.EncodeTerms<'a when 'a :> Expr and 'a : equality> (ts : term seq) : BoolExpr list * 'a array =
             let encodeOne acc term =
-                let result = x.EncodeTerm encCtx term
+                let result = x.EncodeTerm term
                 result.expr :?> 'a, acc @ result.assumptions
             let expressions, assumptions = Seq.mapFold encodeOne List.empty ts
             assumptions, Array.ofSeq expressions
 
 // ------------------------------- Encoding: memory reading -------------------------------
 
-        member private x.EncodeSymbolicAddress encCtx (heapRefSource : ISymbolicConstantSource) path name =
-            x.EncodeMemoryAccessConstant encCtx name heapRefSource path addressType
+        member private x.EncodeSymbolicAddress (heapRefSource : ISymbolicConstantSource) path name =
+            x.EncodeMemoryAccessConstant name heapRefSource path addressType
 
-        // TODO: [style] get rid of accumulators
-        member private x.KeyInVectorTimeIntervals encCtx (key : Expr) acc (region : vectorTime intervals) =
-            let onePointCondition acc (y : vectorTime endpoint) =
-                let bound = ctx.MkNumeral(encCtx.addressOrder[y.elem], x.Type2Sort addressType) :?> BitVecExpr
-                let condition =
-                    match y.sort with
-                    | endpointSort.OpenRight -> x.MkBVSLT(key :?> BitVecExpr, bound)
-                    | endpointSort.ClosedRight -> x.MkBVSLE(key :?> BitVecExpr, bound)
-                    | endpointSort.OpenLeft -> x.MkBVSGT(key :?> BitVecExpr, bound)
-                    | endpointSort.ClosedLeft -> x.MkBVSGE(key :?> BitVecExpr, bound)
-                    | _ -> __unreachable__()
-                x.MkAnd(acc, condition)
-            let intervalWithoutLeftZeroBound =
-                region.points |> List.filter (fun ep -> VectorTime.less VectorTime.zero ep.elem)
-            List.fold onePointCondition acc intervalWithoutLeftZeroBound
+        member private x.GetRegionConstant (name : string) sort (path : path) (regionSort : regionSort) =
+            let constName = $"{name} of {regionSort}, {path}"
+            let mkConst () = ctx.MkConst(constName, sort) :?> ArrayExpr
+            getMemoryConstant mkConst (regionSort, path)
 
-        member private x.HeapAddressKeyInRegion encCtx acc (keyExpr : Expr) region =
-            x.KeyInVectorTimeIntervals encCtx keyExpr acc region
-
-        member private x.KeyInIntPoints key acc (region : int points) =
-            let points, operation =
-                match region with
-                | {points = points; thrown = true} -> points, x.MkNot
-                | {points = points; thrown = false} -> points, id
-            let handleOne acc (point : int) =
-                let pointExpr = ctx.MkNumeral(point, x.Type2Sort Types.IndexType)
-                x.MkOr(acc, x.MkEq(key, pointExpr))
-            let condition = PersistentSet.fold handleOne FalseExpr points |> operation
-            x.MkAnd(acc, condition)
-
-        member private x.KeyInProductRegion keyInFst keyInSnd acc (region : productRegion<'a, 'b>) =
-            let checkKeyInOne acc (fst, snd) = x.MkAnd(acc, keyInFst TrueExpr fst, keyInSnd TrueExpr snd)
-            List.fold checkKeyInOne acc region.products
-
-        member private x.KeysInIntPointsListProductRegion keys acc (region : int points listProductRegion) =
-            match region, keys with
-            | NilRegion, Seq.Empty -> acc
-            | ConsRegion products, Seq.Cons(key, others) ->
-                let keyInPoints = x.KeyInIntPoints key
-                let keysInProductList = x.KeysInIntPointsListProductRegion others
-                x.KeyInProductRegion keyInPoints keysInProductList acc products
-            | _ -> __unreachable__()
-
-        member private x.ArrayOneIndexKeyInRegion encCtx acc (keyExpr : Expr[]) region =
-            let addressInRegion = x.KeyInVectorTimeIntervals encCtx (Array.head keyExpr)
-            let indicesInRegion acc region = x.KeysInIntPointsListProductRegion (Array.tail keyExpr) acc region
-            x.KeyInProductRegion addressInRegion indicesInRegion acc region
-
-        member private x.VectorIndexKeyInRegion encCtx acc (keyExpr : Expr[]) region =
-            assert(Array.length keyExpr = 2)
-            let addressInRegion = x.KeyInVectorTimeIntervals encCtx keyExpr[0]
-            let indicesInRegion = x.KeyInIntPoints keyExpr[1]
-            x.KeyInProductRegion addressInRegion indicesInRegion acc region
-
-        member private x.stackBufferIndexKeyInRegion acc keyExpr region =
-            x.KeyInIntPoints keyExpr acc region
-
-        member private x.GetRegionConstant (name : string) sort (path : path) (regSort : regionSort) =
-            let mkConst () = ctx.MkConst(name, sort) :?> ArrayExpr
-            getMemoryConstant mkConst (regSort, path)
-
-        member private x.MemoryReading encCtx specializeWithKey keyInRegion keysAreMatch encodeKey inst (path : path) left mo typ =
+        member private x.MemoryReading specializeWithKey keysAreMatch encodeKey inst (path : path) readKey mo =
             let updates = MemoryRegion.flatten mo
-            let assumptions, leftExpr = encodeKey left
-            let leftRegion = (left :> IMemoryKey<'a, 'b>).Region
-            let leftInRegion = keyInRegion TrueExpr leftExpr leftRegion
-            let assumptions = leftInRegion :: assumptions
-            let inst, instAssumptions = inst leftExpr
+            let assumptions, readExpr = encodeKey readKey
+            let readRegion = (readKey :> IMemoryKey<'a, 'b>).Region
+            let readKeyInRegionGuard = (readKey :> IMemoryKey<'a,'b>).InRegionCondition readRegion
+            let {assumptions = inRegionAssumptions} = x.EncodeTerm readKeyInRegionGuard
+            let assumptions = inRegionAssumptions @ assumptions
+            let inst, instAssumptions = inst readExpr
             let assumptions = instAssumptions @ assumptions
-            let checkOneKey (right, reg, value) (acc, assumptions) =
+            let checkOneKey (updateKey, reg, value) (acc, assumptions) =
                 // NOTE: we need constraints on right key, because path condition may contain it
                 // EXAMPLE: a[k] = 1; if (k == 0 && a[i] == 1) {...}
-                let matchAssumptions, keysAreMatch = keysAreMatch leftExpr right reg
+                let matchAssumptions, keysAreMatch = keysAreMatch readKey updateKey reg
                 // TODO: [style] auto append assumptions
                 let assumptions = List.append assumptions matchAssumptions
                 let readFieldIfNeed term path =
@@ -727,28 +892,29 @@ module internal Z3 =
                         assert(IsPtr term)
                         Memory.ExtractPointerOffset term
                 let value = path.Fold readFieldIfNeed value
-                let valueExpr = specializeWithKey value left right |> x.EncodeTerm encCtx
+                let valueExpr = specializeWithKey value readKey updateKey |> x.EncodeTerm
                 let assumptions = List.append assumptions valueExpr.assumptions
                 x.MkITE(keysAreMatch, valueExpr.expr, acc), assumptions
             let expr, assumptions = List.foldBack checkOneKey updates (inst, assumptions)
             encodingResult.Create(expr, assumptions)
 
-        member private x.HeapReading encCtx key mo typ source path name =
+        member private x.HeapReading key mo typ source path name =
             assert mo.defaultValue.IsNone
-            let encodeKey (k : heapAddressKey) = x.EncodeTerm encCtx k.address |> toTuple
-            let sort = ctx.MkArraySort(x.Type2Sort addressType, x.Type2Sort typ)
+            let encodeKey (k : heapAddressKey) = x.EncodeTerm k.address |> toTuple
             let regionSort = GetHeapReadingRegionSort source
-            let array = x.GetRegionConstant name sort path regionSort
             let inst (k : Expr) =
+                let sort = ctx.MkArraySort(x.Type2Sort addressType, x.Type2Sort typ)
+                let array = x.GetRegionConstant name sort path regionSort
+                let defaultValues = getDefaultValues regionSort
+                defaultValues.Add(Array.singleton k) |> ignore
                 let expr = ctx.MkSelect(array, k)
                 expr, x.GenerateInstAssumptions expr typ
-            let keyInRegion = x.HeapAddressKeyInRegion encCtx
-            let keysAreMatch leftExpr right rightRegion =
-                let assumptions, rightExpr = encodeKey right
-                let eq = x.MkEq(leftExpr, rightExpr)
-                assumptions, x.KeyInVectorTimeIntervals encCtx rightExpr eq rightRegion
+            let keysAreMatch read update updateRegion =
+                let matchCondition = (read :> IMemoryKey<'a,'b>).MatchCondition update updateRegion
+                let {expr = matchConditionEncoded; assumptions = encodeAssumptions } = x.EncodeTerm matchCondition
+                encodeAssumptions, matchConditionEncoded :?> BoolExpr
             let specialize v _ _ = v
-            let res = x.MemoryReading encCtx specialize keyInRegion keysAreMatch encodeKey inst path key mo typ
+            let res = x.MemoryReading specialize keysAreMatch encodeKey inst path key mo
             match regionSort with
             | HeapFieldSort field when field = Reflection.stringLengthField -> x.GenerateLengthAssumptions res
             | _ -> res
@@ -762,7 +928,7 @@ module internal Z3 =
                 belowZero |> List.singleton
             else List.empty
 
-        // NOTE: temporary generating string with 0 <= length <= 20
+        // NOTE: temporary generating string with 0 <= length <= maxBufferSize
         member private x.GenerateLengthAssumptions encodingResult =
             let expr = encodingResult.expr :?> BitVecExpr
             let assumptions = encodingResult.assumptions
@@ -771,126 +937,102 @@ module internal Z3 =
             let assumptions =
                 if maxBufferSize < 0 then assumptions
                 else x.MkBVSLE(expr, ctx.MkBV(maxBufferSize, expr.SortSize)) :: assumptions
-            // TODO: this limits length < 20, delete when model normalization is complete
+            // TODO: this limits length < 'maxBufferSize', delete when model normalization is complete
             { encodingResult with assumptions = assumptions }
 
         // NOTE: XML serializer can not generate special char symbols (char <= 32) #XMLChar
         // TODO: use another serializer
         member private x.GenerateCharAssumptions encodingResult =
-            // TODO: use stringRepr for serialization of strings
-            let expr = encodingResult.expr :?> BitVecExpr
-            let assumptions = encodingResult.assumptions
-            let left = ctx.MkBVSGT(expr, ctx.MkBV(32, expr.SortSize))
-            let right = ctx.MkBVSLT(expr, ctx.MkBV(127, expr.SortSize))
-            {expr = expr; assumptions = left :: right :: assumptions}
+            if API.CharsArePretty then
+                let expr = encodingResult.expr :?> BitVecExpr
+                let assumptions = encodingResult.assumptions
+                let left = ctx.MkBVSGT(expr, ctx.MkBV(32, expr.SortSize))
+                let right = ctx.MkBVSLT(expr, ctx.MkBV(127, expr.SortSize))
+                {expr = expr; assumptions = left :: right :: assumptions}
+            else encodingResult
 
-        member private x.ArrayReading encCtx specialize keyInRegion keysAreMatch encodeKey hasDefaultValue indices key mo typ source path name =
+        member private x.ArrayReading specialize keysAreMatch encodeKey hasDefaultValue indices key mo typ source path name =
             assert mo.defaultValue.IsNone
-            let domainSort = x.Type2Sort addressType :: List.map (x.Type2Sort Types.IndexType |> always) indices |> Array.ofList
-            let valueSort = x.Type2Sort typ
             let inst (k : Expr[]) =
+                let domainSort = x.Type2Sort addressType :: List.map (x.Type2Sort Types.IndexType |> always) indices |> Array.ofList
+                let valueSort = x.Type2Sort typ
                 if hasDefaultValue then x.DefaultValue valueSort, List.empty
                 else
+                    let regionSort = GetHeapReadingRegionSort source
+                    let defaultValues = getDefaultValues regionSort
+                    defaultValues.Add(k) |> ignore
                     let sort = ctx.MkArraySort(domainSort, valueSort)
-                    let array = GetHeapReadingRegionSort source |> x.GetRegionConstant name sort path
+                    let array = x.GetRegionConstant name sort path regionSort
                     let expr = ctx.MkSelect(array, k)
                     expr, x.GenerateInstAssumptions expr typ
-            let res = x.MemoryReading encCtx specialize keyInRegion keysAreMatch encodeKey inst path key mo typ
+            let res = x.MemoryReading specialize keysAreMatch encodeKey inst path key mo
             let res = if typ = typeof<char> then x.GenerateCharAssumptions res else res
             match GetHeapReadingRegionSort source with
             | ArrayLengthSort _ -> x.GenerateLengthAssumptions res
             | _ -> res
 
-        member private x.ArrayRangeKeyMatches encCtx leftExpr address fromIndices toIndices rightRegion =
-            // Encoding of range key
-            let addressAssumptions, addressExpr = x.EncodeTerm encCtx address |> toTuple
-            let fromAssumptions, fromIndices = x.EncodeTerms encCtx fromIndices
-            let toAssumptions, toIndices = x.EncodeTerms encCtx toIndices
-            // Accumulating assumptions
-            let assumptions = addressAssumptions @ fromAssumptions @ toAssumptions
-            let leftAddress = Array.head leftExpr
-            let leftIndices = Array.tail leftExpr
-            // Calculating match conditions:
-            // (1) left address equals right address
-            let addressesEq = x.MkEq(addressExpr, leftAddress)
-            // (2) right address and left indices are in right's region
-            // NOTE: checking left indices, because right key is range of indices and we can not encode it as Expr[]
-            let key = Array.append [|addressExpr|] leftIndices
-            let keyInRegion = x.ArrayOneIndexKeyInRegion encCtx addressesEq key rightRegion
-            // (3) every index of left key is in bounds of right key
-            let keyInBounds (i : Expr) (l : Expr) (r : Expr) =
-                let i = i :?> BitVecExpr
-                x.MkAnd(x.MkBVSLE(l :?> BitVecExpr, i), x.MkBVSLE(i, r :?> BitVecExpr))
-            let indicesConditions = Array.map3 keyInBounds leftIndices fromIndices toIndices
-            assumptions, x.MkAnd(x.MkAnd indicesConditions, keyInRegion)
-
-        member private x.ArrayIndexReading encCtx key hasDefaultValue mo typ source path name =
+        member private x.ArrayIndexReading key hasDefaultValue mo typ source path name =
             let encodeKey = function
-                | OneArrayIndexKey(address, indices) -> address :: indices |> x.EncodeTerms encCtx
+                | OneArrayIndexKey(address, indices) -> address :: indices |> x.EncodeTerms
                 | RangeArrayIndexKey _ as key -> internalfail $"EncodeMemoryAccessConstant: unexpected array key {key}"
-            let keyInRegion = x.ArrayOneIndexKeyInRegion encCtx
-            let arraysEquality (left, right) =
-                Seq.map2 (fun l r -> x.MkEq(l, r)) left right |> x.MkAnd
-            let keysAreMatch leftExpr (right : heapArrayKey) rightRegion =
-                match right with
-                | OneArrayIndexKey _ ->
-                    let assumptions, rightExpr = encodeKey right
-                    let eq = arraysEquality(leftExpr, rightExpr)
-                    assumptions, keyInRegion eq rightExpr rightRegion
-                | RangeArrayIndexKey(address, fromIndices, toIndices) ->
-                    x.ArrayRangeKeyMatches encCtx leftExpr address fromIndices toIndices rightRegion
+            let keysAreMatch read update updateRegion =
+                let matchCondition = (read :> IMemoryKey<'a,'b>).MatchCondition update updateRegion
+                let {expr = matchConditionEncoded; assumptions = assumptions} = x.EncodeTerm matchCondition
+                assumptions, matchConditionEncoded :?> BoolExpr
             let indices =
                 match key with
                 | OneArrayIndexKey(_, indices) -> indices
                 | _ -> internalfail $"EncodeMemoryAccessConstant: unexpected array key {key}"
-            x.ArrayReading encCtx SpecializeWithKey keyInRegion keysAreMatch encodeKey hasDefaultValue indices key mo typ source path name
+            x.ArrayReading SpecializeWithKey keysAreMatch encodeKey hasDefaultValue indices key mo typ source path name
 
-        member private x.VectorIndexReading encCtx (key : heapVectorIndexKey) hasDefaultValue mo typ source path name =
+        member private x.VectorIndexReading (key : heapVectorIndexKey) hasDefaultValue mo typ source path name =
             let encodeKey (k : heapVectorIndexKey) =
-                [|k.address; k.index|] |> x.EncodeTerms encCtx
-            let keyInRegion = x.VectorIndexKeyInRegion encCtx
-            let keysAreEqual (left : Expr[], right : Expr[]) =
-                x.MkAnd(x.MkEq(left[0], right[0]), x.MkEq(left[1], right[1]))
-            let keysAreMatch leftExpr right rightRegion =
-                let assumptions, rightExpr = encodeKey right
-                let eq = keysAreEqual(leftExpr, rightExpr)
-                assumptions, keyInRegion eq rightExpr rightRegion
+                x.EncodeTerms [|k.address; k.index|]
+            let keysAreMatch read update updateRegion =
+                let matchCondition = (read :> IMemoryKey<'a,'b>).MatchCondition update updateRegion
+                let {expr = matchConditionEncoded; assumptions = assumptions} = x.EncodeTerm matchCondition
+                assumptions, matchConditionEncoded :?> BoolExpr
             let specialize v _ _ = v
-            x.ArrayReading encCtx specialize keyInRegion keysAreMatch encodeKey hasDefaultValue [key.index] key mo typ source path name
+            x.ArrayReading specialize keysAreMatch encodeKey hasDefaultValue [key.index] key mo typ source path name
 
-        member private x.StackBufferReading encCtx key mo typ source path name =
+        member private x.StackBufferReading key mo typ source path name =
             assert mo.defaultValue.IsNone
-            let encodeKey (k : stackBufferIndexKey) = x.EncodeTerm encCtx k.index |> toTuple
-            let sort = ctx.MkArraySort(x.Type2Sort addressType, x.Type2Sort typ)
-            let array = GetHeapReadingRegionSort source |> x.GetRegionConstant name sort path
-            let keyInRegion = x.stackBufferIndexKeyInRegion
+            let encodeKey (k : stackBufferIndexKey) = x.EncodeTerm k.index |> toTuple
             let inst (k : Expr) =
+                let regionSort = GetHeapReadingRegionSort source
+                let sort = ctx.MkArraySort(x.Type2Sort addressType, x.Type2Sort typ)
+                let array = x.GetRegionConstant name sort path regionSort
+                let defaultValues = getDefaultValues regionSort
+                defaultValues.Add(Array.singleton k) |> ignore
                 let expr = ctx.MkSelect(array, k)
                 expr, x.GenerateInstAssumptions expr typ
-            let keysAreMatch leftExpr right rightRegion =
-                let assumptions, rightExpr = encodeKey right
-                let eq = x.MkEq(leftExpr, rightExpr)
-                assumptions, x.KeyInIntPoints rightExpr eq rightRegion
+            let keysAreMatch read update updateRegion =
+               let matchCondition = (read :> IMemoryKey<'a,'b>).MatchCondition update updateRegion
+               let {expr = matchConditionEncoded; assumptions = assumptions} = x.EncodeTerm matchCondition
+               assumptions, matchConditionEncoded :?> BoolExpr
             let specialize v _ _ = v
-            x.MemoryReading encCtx specialize keyInRegion keysAreMatch encodeKey inst path key mo typ
+            x.MemoryReading specialize keysAreMatch encodeKey inst path key mo
 
-        member private x.StaticsReading encCtx (key : symbolicTypeKey) mo typ source path (name : string) =
+        member private x.StaticsReading (key : symbolicTypeKey) mo typ source path (name : string) =
             assert mo.defaultValue.IsNone
-            let keyType = x.Type2Sort Types.IndexType
-            let sort = ctx.MkArraySort(keyType, x.Type2Sort typ)
-            let array = GetHeapReadingRegionSort source |> x.GetRegionConstant name sort path
             let updates = MemoryRegion.flatten mo
             let value = Seq.tryFind (fun (k, _, _) -> k = key) updates
             match value with
-            | Some (_, _, v) -> x.EncodeTerm encCtx v
+            | Some (_, _, v) -> x.EncodeTerm v
             | None ->
+                let keyType = x.Type2Sort Types.IndexType
+                let sort = ctx.MkArraySort(keyType, x.Type2Sort typ)
+                let regionSort = GetHeapReadingRegionSort source
+                let array = x.GetRegionConstant name sort path regionSort
                 let encodedKey = ctx.MkConst(key.ToString(), keyType)
                 encodingCache.staticKeys.Add(encodedKey, key.typ)
+                let defaultValues = getDefaultValues regionSort
+                defaultValues.Add(Array.singleton encodedKey) |> ignore
                 {expr = ctx.MkSelect(array, encodedKey); assumptions = List.empty}
 
-        member private x.StructReading encCtx (structSource : ISymbolicConstantSource) (field : fieldId) typ (path : path) name =
+        member private x.StructReading (structSource : ISymbolicConstantSource) (field : fieldId) typ (path : path) name =
             let path = path.StructField field
-            let res = x.EncodeMemoryAccessConstant encCtx name structSource path typ
+            let res = x.EncodeMemoryAccessConstant name structSource path typ
             match field with
             | _ when field.declaringType = typeof<decimal> && field.name = "_flags" ->
                 let expr = res.expr :?> BitVecExpr
@@ -906,27 +1048,27 @@ module internal Z3 =
                 { res with assumptions = lowerIsZero::expInBound::upperIsZero::res.assumptions }
             | _ -> res
 
-        member private x.EncodeMemoryAccessConstant encCtx name (source : ISymbolicConstantSource) (path : path) typ : encodingResult =
+        member private x.EncodeMemoryAccessConstant name (source : ISymbolicConstantSource) (path : path) typ : encodingResult =
             match source with
-            | HeapReading(key, mo) -> x.HeapReading encCtx key mo typ source path name
+            | HeapReading(key, mo) -> x.HeapReading key mo typ source path name
             | ArrayIndexReading(hasDefaultValue, key, mo) ->
-                x.ArrayIndexReading encCtx key hasDefaultValue mo typ source path name
+                x.ArrayIndexReading key hasDefaultValue mo typ source path name
             | VectorIndexReading(hasDefaultValue, key, mo) ->
-                x.VectorIndexReading encCtx key hasDefaultValue mo typ source path name
-            | StackBufferReading(key, mo) -> x.StackBufferReading encCtx key mo typ source path name
-            | StaticsReading(key, mo) -> x.StaticsReading encCtx key mo typ source path name
-            | StructFieldSource(structSource, field) -> x.StructReading encCtx structSource field typ path name
+                x.VectorIndexReading key hasDefaultValue mo typ source path name
+            | StackBufferReading(key, mo) -> x.StackBufferReading key mo typ source path name
+            | StaticsReading(key, mo) -> x.StaticsReading key mo typ source path name
+            | StructFieldSource(structSource, field) -> x.StructReading structSource field typ path name
             | HeapAddressSource source ->
                 assert(typ = addressType)
-                x.EncodeSymbolicAddress encCtx source path name
+                x.EncodeSymbolicAddress source path name
             | PointerAddressSource source ->
                 assert(typ = addressType)
                 let path = path.PointerAddress()
-                x.EncodeMemoryAccessConstant encCtx name source path addressType
+                x.EncodeMemoryAccessConstant name source path addressType
             | PointerOffsetSource source ->
                 assert(typ = typeof<int>)
                 let path = path.PointerOffset()
-                x.EncodeMemoryAccessConstant encCtx name source path typeof<int>
+                x.EncodeMemoryAccessConstant name source path typeof<int>
             | _ -> x.CreateConstant name typ
 
     // ------------------------------- Decoding -------------------------------
@@ -1004,6 +1146,33 @@ module internal Z3 =
             | 8u  -> Concrete (convert bv.Int t) t
             | _ -> __notImplemented__()
 
+        member private x.DecodeFPNum t (fp : FPNum) =
+            let typeIsSingle = t = typeof<Single>
+            let typeIsDouble = t = typeof<Double>
+            let sizeExp = int fp.EBits
+            let exprIsSingle = sizeExp = 8
+            let exprIsDouble = sizeExp = 11
+            assert(exprIsSingle && typeIsSingle || exprIsDouble && typeIsDouble)
+            let number : obj =
+                match fp with
+                | _ when fp.IsNaN && exprIsSingle -> Single.NaN
+                | _ when fp.IsNaN && exprIsDouble -> Double.NaN
+                | _ when fp.IsFPPlusInfinity && exprIsSingle -> Single.PositiveInfinity
+                | _ when fp.IsFPPlusInfinity && exprIsDouble -> Double.PositiveInfinity
+                | _ when fp.IsFPMinusInfinity && exprIsSingle -> Single.NegativeInfinity
+                | _ when fp.IsFPMinusInfinity && exprIsDouble -> Double.NegativeInfinity
+                | _ ->
+                    let sizeVal = if exprIsSingle then 23 else 52
+                    let sign = if fp.Sign then "1" else "0"
+                    let exp = fp.ExponentInt64()
+                    let value = int64 fp.SignificandUInt64
+                    let expBinary = Convert.ToString(exp, 2).PadLeft(sizeExp, '0')
+                    let valueBinary = Convert.ToString(value, 2).PadLeft(sizeVal, '0')
+                    let numStringBE = sign + expBinary + valueBinary
+                    if exprIsSingle then BitConverter.Int32BitsToSingle(Convert.ToInt32(numStringBE, 2))
+                    else BitConverter.Int64BitsToDouble(Convert.ToInt64(numStringBE, 2))
+            Concrete number t
+
         member public x.Decode t (expr : Expr) =
             match expr with
             | :? BitVecNum as bv when Types.IsNumeric t -> x.DecodeBv t bv
@@ -1012,6 +1181,7 @@ module internal Z3 =
             | _ when not (Types.IsValueType t) ->
                 let address = x.DecodeConcreteHeapAddress expr |> ConcreteHeapAddress
                 HeapRef address t
+            | :? FPNum as fp when Types.IsNumeric t -> x.DecodeFPNum t fp
             | :? BitVecExpr as bv when bv.IsConst ->
                 if encodingCache.e2t.ContainsKey(expr) then encodingCache.e2t[expr]
                 else x.GetTypeOfBV bv |> Concrete expr.String
@@ -1033,9 +1203,13 @@ module internal Z3 =
                 elif expr.IsBVULT then x.DecodeBoolExpr OperationType.Less_Un expr
                 elif expr.IsBVSLE then x.DecodeBoolExpr OperationType.LessOrEqual expr
                 elif expr.IsBVULE then x.DecodeBoolExpr OperationType.LessOrEqual_Un expr
+                elif expr.IsFPGt then x.DecodeBoolExpr OperationType.Greater expr
+                elif expr.IsFPGe then x.DecodeBoolExpr OperationType.GreaterOrEqual expr
+                elif expr.IsFPLt then x.DecodeBoolExpr OperationType.Less expr
+                elif expr.IsFPLe then x.DecodeBoolExpr OperationType.LessOrEqual expr
                 else __notImplemented__()
 
-        member private x.WriteByPath term value (path : pathPart list) =
+        member private x.WriteByPath term (value : term) (path : pathPart list) =
             match path, term.term with
             | [PointerAddress], Ptr(HeapLocation(_, t), sightType, offset) ->
                 Ptr (HeapLocation(value, t)) sightType offset
@@ -1057,15 +1231,98 @@ module internal Z3 =
                 assert(not <| dict.ContainsKey key)
                 dict.Add(key, ref value)
             else
-                let term = Dict.getValueOrUpdate dict key (fun () ->
-                    Memory.DefaultOf t |> ref)
+                let exists, res = dict.TryGetValue key
+                let term =
+                    if exists then res
+                    else
+                        let res = Memory.DefaultOf t |> ref
+                        dict.Add(key, res)
+                        res
                 term.Value <- x.WriteByPath term.Value value path.parts
+
+        member private x.WriteToPrimitiveModel (subst : IDictionary<ISymbolicConstantSource, term ref>) (m : Model) (path : path) source expr typ constant =
+            let refinedExpr = m.Eval(expr, false)
+            let t = if path.IsEmpty then typ else path.TypeOfLocation
+            let term = x.Decode t refinedExpr
+            assert(not (constant = term) || expr = refinedExpr)
+            if constant <> term then
+                x.WriteDictOfValueTypes subst source path typ term
+
+        member private x.FillRegion state (m : Model) (regionSort : regionSort) constantValue =
+            match regionSort with
+            | HeapFieldSort field ->
+                let suitableKeys = HashSet<IHeapAddressKey>()
+                for expressions in getDefaultValues regionSort do
+                    assert(Array.length expressions = 1)
+                    let refinedAddress = m.Eval(expressions[0], false)
+                    let address = x.DecodeConcreteHeapAddress refinedAddress |> ConcreteHeapAddress
+                    suitableKeys.Add({address = address}) |> ignore
+                let isSuitable = suitableKeys.Contains
+                Memory.FillClassFieldsRegion state field constantValue isSuitable
+            | StaticFieldSort typ ->
+                let suitableKeys = HashSet<ISymbolicTypeKey>()
+                for expressions in getDefaultValues regionSort do
+                    assert(Array.length expressions = 1)
+                    let address = expressions[0]
+                    let typ = x.DecodeSymbolicTypeAddress address
+                    suitableKeys.Add({typ = typ}) |> ignore
+                let isSuitable = suitableKeys.Contains
+                Memory.FillStaticsRegion state typ constantValue isSuitable
+            | ArrayIndexSort arrayType ->
+                let suitableAddresses = HashSet<term>()
+                for expressions in getDefaultValues regionSort do
+                    let refinedAddress = m.Eval(expressions[0], false)
+                    let address = x.DecodeConcreteHeapAddress refinedAddress |> ConcreteHeapAddress
+                    suitableAddresses.Add(address) |> ignore
+                let isSuitable (key : IHeapArrayKey) =
+                    match key with
+                    | :? heapArrayKey as key -> suitableAddresses.Contains key.Address
+                    | _ -> false
+                Memory.FillArrayRegion state arrayType constantValue isSuitable
+            | ArrayLengthSort arrayType ->
+                let suitableKeys = HashSet<IHeapVectorIndexKey>()
+                for expressions in getDefaultValues regionSort do
+                    assert(Array.length expressions = 2)
+                    let refinedAddress = m.Eval(expressions[0], false)
+                    let address = x.DecodeConcreteHeapAddress refinedAddress |> ConcreteHeapAddress
+                    let index = m.Eval(expressions[1], false) |> x.Decode typeof<int>
+                    suitableKeys.Add({address = address; index = index}) |> ignore
+                let isSuitable = suitableKeys.Contains
+                Memory.FillLengthRegion state arrayType constantValue isSuitable
+            | ArrayLowerBoundSort arrayType ->
+                let suitableKeys = HashSet<IHeapVectorIndexKey>()
+                for expressions in getDefaultValues regionSort do
+                    assert(Array.length expressions = 2)
+                    let refinedAddress = m.Eval(expressions[0], false)
+                    let address = x.DecodeConcreteHeapAddress refinedAddress |> ConcreteHeapAddress
+                    let index = m.Eval(expressions[1], false) |> x.Decode typeof<int>
+                    suitableKeys.Add({address = address; index = index}) |> ignore
+                let isSuitable = suitableKeys.Contains
+                Memory.FillLowerBoundRegion state arrayType constantValue isSuitable
+            | StackBufferSort key ->
+                let suitableKeys = HashSet<IStackBufferIndexKey>()
+                for expressions in getDefaultValues regionSort do
+                    assert(Array.length expressions = 1)
+                    let index = m.Eval(expressions[0], false) |> x.Decode typeof<int8>
+                    suitableKeys.Add({index = index}) |> ignore
+                let isSuitable = suitableKeys.Contains
+                Memory.FillStackBufferRegion state key constantValue isSuitable
+            | BoxedSort typ ->
+                let suitableKeys = HashSet<IHeapAddressKey>()
+                for expressions in getDefaultValues regionSort do
+                    assert(Array.length expressions = 1)
+                    let refinedAddress = m.Eval(expressions[0], false)
+                    let address = x.DecodeConcreteHeapAddress refinedAddress |> ConcreteHeapAddress
+                    suitableKeys.Add({address = address}) |> ignore
+                let isSuitable = suitableKeys.Contains
+                Memory.FillBoxedRegion state typ constantValue isSuitable
 
         member x.MkModel (m : Model) =
             try
-                let subst = Dictionary<ISymbolicConstantSource, term>()
                 let stackEntries = Dictionary<stackKey, term ref>()
-                let state = {Memory.EmptyState() with complete = true}
+                // TODO: compose memory region with concrete memory
+                let state = { Memory.EmptyState() with complete = true; memoryMode = SymbolicMode }
+                let primitiveModel = Dictionary<ISymbolicConstantSource, term ref>()
 
                 for KeyValue(key, value) in encodingCache.t2e do
                     match key with
@@ -1082,20 +1339,14 @@ module internal Z3 =
                             let address = x.DecodeConcreteHeapAddress refinedExpr |> ConcreteHeapAddress
                             let value = HeapRef address t
                             x.WriteDictOfValueTypes stackEntries key path key.TypeOfLocation value
-                        | HeapAddressSource(Path.Path(_, (:? functionResultConstantSource as frs)))
-                        | Path.Path(_, (:? functionResultConstantSource as frs)) ->
-                            let refinedExpr = m.Eval(value.expr, false)
+                        | HeapAddressSource(Path.Path(path, (:? functionResultConstantSource as frs)))
+                        | Path.Path(path, (:? functionResultConstantSource as frs)) ->
                             let t = (frs :> ISymbolicConstantSource).TypeOfLocation
-                            let term = x.Decode t refinedExpr
-                            assert(not (constant = term) || value.expr = refinedExpr)
-                            if constant <> term then subst.Add(ms, term)
+                            x.WriteToPrimitiveModel primitiveModel m path frs value.expr t constant
                         | _ -> ()
                     | {term = Constant(_, :? IStatedSymbolicConstantSource, _)} -> ()
                     | {term = Constant(_, source, t)} as constant ->
-                        let refinedExpr = m.Eval(value.expr, false)
-                        let term = x.Decode t refinedExpr
-                        assert(not (constant = term) || value.expr = refinedExpr)
-                        if constant <> term then subst.Add(source, term)
+                        x.WriteToPrimitiveModel primitiveModel m path.Empty source value.expr t constant
                     | _ -> ()
 
                 let frame = stackEntries |> Seq.map (fun kvp ->
@@ -1105,20 +1356,19 @@ module internal Z3 =
                     (key, Some term, typ))
                 Memory.NewStackFrame state None (List.ofSeq frame)
 
-                let pointers = Dictionary<address, term>()
+                let stores = Dictionary<address * path, term * regionSort>()
                 let defaultValues = Dictionary<regionSort, term ref>()
-                for kvp in encodingCache.regionConstants do
-                    let region, path = kvp.Key
-                    let constant = kvp.Value
+                for KeyValue((region, path), constant) in encodingCache.regionConstants do
                     let arr = m.Eval(constant, false)
+                    let typeOfRegion = region.TypeOfLocation
                     let typeOfLocation =
-                        if path.IsEmpty then region.TypeOfLocation
+                        if path.IsEmpty then typeOfRegion
                         else path.TypeOfLocation
                     let rec parseArray (arr : Expr) =
                         if arr.IsConstantArray then
                             assert(arr.Args.Length = 1)
                             let constantValue = x.Decode typeOfLocation arr.Args[0]
-                            x.WriteDictOfValueTypes defaultValues region path region.TypeOfLocation constantValue
+                            x.WriteDictOfValueTypes defaultValues region path typeOfRegion constantValue
                         elif arr.IsDefaultArray then
                             assert(arr.Args.Length = 1)
                         elif arr.IsStore then
@@ -1126,22 +1376,10 @@ module internal Z3 =
                             parseArray arr.Args[0]
                             let address = x.DecodeMemoryKey region arr.Args[1..arr.Args.Length - 2]
                             let value = Array.last arr.Args |> x.Decode typeOfLocation
-                            let address, ptrPart = path.ToAddress address
-                            match ptrPart with
-                            | Some kind ->
-                                let exists, ptr = pointers.TryGetValue(address)
-                                let ptr =
-                                    if exists then ptr
-                                    else Memory.DefaultOf address.TypeOfLocation
-                                match kind, ptr.term with
-                                | PointerAddress, Ptr(HeapLocation(_, t), s, o) ->
-                                    pointers[address] <- Ptr (HeapLocation(value, t)) s o
-                                | PointerOffset, Ptr(HeapLocation(a, t), s, _) ->
-                                    pointers[address] <- Ptr (HeapLocation(a, t)) s value
-                                | _ -> internalfail $"MkModel: unexpected path {kind}"
-                            | None ->
+                            if path.IsEmpty then
                                 let states = Memory.Write state (Ref address) value
                                 assert(states.Length = 1 && states[0] = state)
+                            else stores[(address, path)] <- value, region
                         elif arr.IsConst then ()
                         elif arr.IsQuantifier then
                             let quantifier = arr :?> Quantifier
@@ -1149,29 +1387,49 @@ module internal Z3 =
                             // This case decodes predicates, for example: \x -> x = 100, where 'x' is address
                             if body.IsApp && body.IsEq && body.Args.Length = 2 then
                                 // Firstly, setting all values to 'false'
-                                x.WriteDictOfValueTypes defaultValues region path region.TypeOfLocation (MakeBool false)
+                                x.WriteDictOfValueTypes defaultValues region path typeOfRegion (MakeBool false)
                                 let address = x.DecodeMemoryKey region (Array.singleton body.Args[1])
                                 let address, ptrPart = path.ToAddress address
                                 assert(Option.isNone ptrPart)
                                 // Secondly, setting 'true' value for concrete address from predicate
                                 let states = Memory.Write state (Ref address) (MakeBool true)
                                 assert(states.Length = 1 && states[0] = state)
-                            else internalfailf "Unexpected quantifier expression in model: %O" arr
-                        else internalfailf "Unexpected array expression in model: %O" arr
+                            else internalfail $"Unexpected quantifier expression in model: {arr}"
+                        else internalfail $"Unexpected array expression in model: {arr}"
                     parseArray arr
 
-                for KeyValue(address, ptr) in pointers do
-                    let states = Memory.Write state (Ref address) ptr
+                let complexStores = Dictionary<address, term ref>()
+
+                for KeyValue((address, path), (value, regionSort)) in stores do
+                    assert(not path.IsEmpty)
+                    let exists, term = complexStores.TryGetValue address
+                    let term =
+                        if exists then term
+                        else
+                            let term =
+                                let exists, term = defaultValues.TryGetValue regionSort
+                                if exists then term.Value |> ref
+                                else Memory.DefaultOf regionSort.TypeOfLocation |> ref
+                            complexStores.Add(address, term)
+                            term
+                    term.Value <- x.WriteByPath term.Value value path.parts
+
+                for KeyValue(address, value) in complexStores do
+                    let states = Memory.Write state (Ref address) value.Value
                     assert(states.Length = 1 && states[0] = state)
 
-                for kvp in defaultValues do
-                    let region = kvp.Key
-                    let constantValue = kvp.Value.Value
-                    Memory.FillRegion state constantValue region
+                for KeyValue(regionSort, value) in defaultValues do
+                    let constantValue = value.Value
+                    x.FillRegion state m regionSort constantValue
 
                 state.startingTime <- [encodingCache.lastSymbolicAddress - 1]
 
                 encodingCache.heapAddresses.Clear()
+
+                let subst = Dictionary<ISymbolicConstantSource, term>()
+                for KeyValue(k, v) in primitiveModel do
+                    subst.Add(k, v.Value)
+
                 state.model <- PrimitiveModel subst
                 StateModel(state, None)
             with e -> internalfail $"MkModel: caught exception {e}"
@@ -1191,12 +1449,12 @@ module internal Z3 =
             | None -> ()
 
         interface ISolver with
-            member x.CheckSat (encCtx : encodingContext) (q : term) : smtResult =
+            member x.CheckSat (q : term) : smtResult =
                 Logger.printLog Logger.Trace "SOLVER: trying to solve constraints..."
                 Logger.printLogLazy Logger.Trace "%s" (lazy q.ToString())
                 try
                     try
-                        let query = builder.EncodeTerm encCtx q
+                        let query = builder.EncodeTerm q
                         let assumptions = query.assumptions
                         let assumptions =
                             seq {
@@ -1228,9 +1486,9 @@ module internal Z3 =
                 finally
                     builder.Reset()
 
-            member x.Assert encCtx (fml : term) =
-                Logger.printLogLazy Logger.Trace "SOLVER: Asserting: %s" (lazy(fml.ToString()))
-                let encoded = builder.EncodeTerm encCtx fml
+            member x.Assert (fml : term) =
+                Logger.printLogLazy Logger.Trace "SOLVER: Asserting: %s" (lazy fml.ToString())
+                let encoded = builder.EncodeTerm fml
                 let encoded = List.fold (fun acc x -> builder.MkAnd(acc, x)) (encoded.expr :?> BoolExpr) encoded.assumptions
                 solver.Assert(encoded)
 

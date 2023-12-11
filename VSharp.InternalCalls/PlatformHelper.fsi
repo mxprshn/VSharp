@@ -17,12 +17,14 @@ module internal PlatformHelper =
     [<Implements("System.Boolean System.Runtime.Intrinsics.Arm.ArmBase.get_IsSupported()")>]
     [<Implements("System.Boolean System.Runtime.Intrinsics.Arm.AdvSimd+Arm64.get_IsSupported()")>]
     [<Implements("System.Boolean System.Runtime.Intrinsics.Arm.ArmBase+Arm64.get_IsSupported()")>]
+    [<Implements("System.Boolean System.Runtime.Intrinsics.Arm.AdvSimd.get_IsSupported()")>]
     val armBaseIsSupported : state -> term list -> term
 
     [<Implements("System.Boolean System.Runtime.Intrinsics.X86.Avx2.get_IsSupported()")>]
     val avx2IsSupported : state -> term list -> term
 
     [<Implements("System.Boolean System.Runtime.Intrinsics.X86.Sse2.get_IsSupported()")>]
+    [<Implements("System.Boolean System.Runtime.Intrinsics.X86.Sse2+X64.get_IsSupported()")>]
     val sse2IsSupported : state -> term list -> term
 
     [<Implements("System.Boolean System.Runtime.Intrinsics.X86.X86Base.get_IsSupported()")>]
@@ -31,3 +33,6 @@ module internal PlatformHelper =
 
     [<Implements("System.Boolean System.Runtime.Intrinsics.Vector128.get_IsHardwareAccelerated()")>]
     val vector128IsHardwareAccelerated : state -> term list -> term
+
+    [<Implements("System.Boolean System.Net.Quic.QuicListener.get_IsSupported()")>]
+    val quicListenerIsSupported : state -> term list -> term

@@ -46,3 +46,28 @@ module Thread =
             (interpreter.Raise interpreter.ArgumentNullException)
             (fun cilState k -> List.singleton cilState |> k)
             id
+
+    let MonitorPulseAll (_ : IInterpreter) (cilState : cilState) (args : term list) =
+        assert(List.length args = 1)
+        List.singleton cilState
+
+    let Initialize (_ : IInterpreter) (cilState : cilState) (args : term list) =
+        assert(List.length args = 1)
+        List.singleton cilState
+
+    let WaitOne (_ : state) (_ : term list) =
+        MakeBool true
+
+    let WaitOneNoCheck (_ : state) (_ : term list) =
+        MakeBool true
+
+    let MonitorWait (interpreter : IInterpreter) (cilState : cilState) (args : term list) =
+        assert(List.length args = 1)
+        let obj = List.head args
+        let nonNullCase cilState k =
+            push (MakeBool true) cilState
+            List.singleton cilState |> k
+        BranchOnNullCIL cilState obj
+            (interpreter.Raise interpreter.ArgumentNullException)
+            nonNullCase
+            id

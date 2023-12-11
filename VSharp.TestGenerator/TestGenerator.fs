@@ -13,7 +13,7 @@ type testGeneratorCache = {
     indices : Dictionary<concreteHeapAddress, int>
     methodSequenceObjects : Dictionary<variableId, obj>
     mockCache : Dictionary<ITypeMock, Mocking.Type>
-    implementations : IDictionary<MethodInfo, term[]>
+    implementations : IDictionary<MethodInfo, term[] * term[][]>
 }
 
 type public testSuite =
@@ -51,7 +51,15 @@ module TestGenerator =
             | _ -> Array.empty
         test.MemoryGraph.AddMockedClass mock fields index :> obj
 
-    let private obj2test eval encodeArr (cache : testGeneratorCache) encodeMock (test : UnitTest) addr typ (methodSequenceObjRef : obj) =
+    let private encodeType (state : state) cha =
+        match state.concreteMemory.TryVirtToPhys cha with
+        | Some obj ->
+            assert(obj :? Type)
+            let t = obj :?> Type
+            typeRepr.Encode t
+        | None -> internalfail "encodeType: unable to encode symbolic instance of 'System.Type'"
+
+    let private obj2test eval state encodeArr (cache : testGeneratorCache) encodeMock (test : UnitTest) addr typ (methodSequenceObjRef : obj) =
         let index = ref 0
         let indices = cache.indices
         if indices.TryGetValue(addr, index) then
@@ -106,10 +114,13 @@ module TestGenerator =
                             let contents : char array = Array.init length readChar
                             String(contents)
                     memoryGraph.AddString index string
+                | _ when Reflection.isInstanceOfType typ ->
+                    // For instance of 'System.Type' or 'System.RuntimeType'
+                    encodeType state addr
                 | _ ->
                     let index = memoryGraph.ReserveRepresentation()
                     indices.Add(addr, index)
-                    let fields = typ |> Reflection.fieldsOf false |> Array.map (fun (field, _) ->
+                    let fields = Reflection.fieldsOf false typ |> Array.map (fun (field, _) ->
                         ClassField(cha, field) |> eval)
                     let repr = memoryGraph.AddClass typ fields index methodSequenceObjRef
                     repr :> obj
@@ -157,7 +168,7 @@ module TestGenerator =
                 | Some region ->
                     let defaultValue =
                         match region.defaultValue with
-                        | Some defaultValue -> encode defaultValue
+                        | Some(defaultValue, _) -> encode defaultValue
                         | None -> null
                     let updates = region.updates
                     let indicesWithValues = SortedDictionary<int list, obj>()
@@ -235,8 +246,8 @@ module TestGenerator =
                 t |> Reflection.fieldsOf false |>
                     Array.map (fun (field, _) -> model.Eval fields.[field] |> model.Complete |> term2obj null)
             test.MemoryGraph.RepresentStruct t fieldReprs methodSequenceObjRef
-        | NullRef _
-        | NullPtr -> null
+        | NullRef _ -> null
+        | NullPtr sightType -> test.MemoryGraph.RepresentNullPtr sightType
         | DetachedPtrTerm offset ->
             let offset = TypeUtils.convert (term2obj offset) typeof<int64> :?> int64
             test.MemoryGraph.RepresentDetachedPtr typeof<Void> offset
@@ -289,7 +300,7 @@ module TestGenerator =
                         address |> Ref |> Memory.Read stateToRead |> model.Complete |> term2obj null
                     let arr2Obj = encodeArrayCompactly state model (term2obj null)
                     let encodeMock = encodeTypeMock model state cache test
-                    obj2test eval arr2Obj cache encodeMock test address typ methodSequenceObjRef
+                    obj2test eval state arr2Obj cache encodeMock test address typ methodSequenceObjRef
                 // If address is not in the 'allocatedTypes', it should not be allocated, so result is 'null'
                 | None -> null
             | PrimitiveModel _ -> __unreachable__()
@@ -299,7 +310,7 @@ module TestGenerator =
             let arr2Obj = encodeArrayCompactly state model term2Obj
             let typ = state.allocatedTypes[address]
             let encodeMock = encodeTypeMock model state cache test
-            obj2test eval arr2Obj cache encodeMock test address typ methodSequenceObjRef
+            obj2test eval state arr2Obj cache encodeMock test address typ methodSequenceObjRef
 
     and private encodeTypeMock (model : model) state (cache : testGeneratorCache) (test : UnitTest) mock : Mocking.Type =
         let mockedType = ref Mocking.Type.Empty
@@ -312,12 +323,15 @@ module TestGenerator =
                 freshMock.AddSuperType t
                 for methodMock in cache.implementations do
                     let method = methodMock.Key
-                    let values = methodMock.Value
+                    let values = fst methodMock.Value
+                    let outParams = snd methodMock.Value
                     let methodType = method.ReflectedType
                     let mockedBaseInterface() =
-                        methodType.IsInterface && Seq.contains methodType (TypeUtils.getBaseInterfaces t)
+                        methodType.IsInterface && Array.contains methodType (TypeUtils.getAllInterfaces t)
                     if methodType = t || mockedBaseInterface() then
-                        freshMock.AddMethod(method, Array.map eval values)
+                        let retImplementations = Array.map eval values
+                        let outImplementations = Array.map (Array.map eval) outParams
+                        freshMock.AddMethod(method, retImplementations, outImplementations)
             freshMock
 
     let encodeExternMock (model : model) state (cache : testGeneratorCache) test (methodMock : IMethodMock) =
@@ -390,7 +404,8 @@ module TestGenerator =
                 match mock.MockingType with
                 | MockingType.Default ->
                     let values = mock.GetImplementationClauses()
-                    cache.implementations.Add(mock.BaseMethod, values)
+                    let outValues = mock.GetOutClauses()
+                    cache.implementations.Add(mock.BaseMethod, (values, outValues))
                 | Extern ->
                     encodeExternMock model state cache test mock
 
@@ -435,7 +450,7 @@ module TestGenerator =
                 let concreteThis = term2obj model state cache test thisMethodSequenceRef thisTerm
                 test.ThisArg <- concreteThis
 
-            match state.exceptionsRegister, suite with
+            match state.exceptionsRegister.Peek, suite with
             | Unhandled(e, _, _), Error(msg, isFatal) ->
                 test.Exception <- MostConcreteTypeOfRef state e
                 test.IsError <- true
@@ -456,7 +471,8 @@ module TestGenerator =
                 test.Expected <- term2obj model state cache test null retVal
             Some test
 
-    let private model2test (test : UnitTest) suite cache (m : Method) model (state : state) =
+    let private model2test (test : UnitTest) (suite : testSuite) cache (m : Method) model (state : state) =
+        assert(suite.IsFatalError || state.exceptionsRegister.Size = 1)
         let suitableState state =
             if m.HasParameterOnStack then Memory.CallStackSize state = 2
             else Memory.CallStackSize state = 1
@@ -474,7 +490,7 @@ module TestGenerator =
             {
                 indices = Dictionary<concreteHeapAddress, int>()
                 mockCache = Dictionary<ITypeMock, Mocking.Type>()
-                implementations = Dictionary<MethodInfo, term[]>()
+                implementations = Dictionary<MethodInfo, term[] * term[][]>()
                 methodSequenceObjects = Dictionary<variableId, obj>()
             }
         model2test test testSuite cache m state.model state
@@ -485,7 +501,7 @@ module TestGenerator =
             {
                 indices = Dictionary<concreteHeapAddress, int>()
                 mockCache = mockCache
-                implementations = Dictionary<MethodInfo, term[]>()
+                implementations = Dictionary<MethodInfo, term[] * term[][]>()
                 methodSequenceObjects = Dictionary<variableId, obj>()
             }
         model2test test testSuite cache m state.model state

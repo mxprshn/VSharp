@@ -30,6 +30,7 @@
         <Compile Include="MemoryRegion.fs" />
         <Compile Include="EvaluationStack.fs" />
         <Compile Include="CallStack.fs" />
+        <Compile Include="TypeSolverUtils.fs" />
         <Compile Include="State.fs" />
         <Compile Include="ConcreteMemory.fs" />
         <Compile Include="Memory.fs" />
@@ -46,11 +47,12 @@
 
     <ItemGroup>
       <ProjectReference Include="..\VSharp.CSharpUtils\VSharp.CSharpUtils.csproj" />
+      <ProjectReference Include="..\VSharp.TestExtensions\VSharp.TestExtensions.csproj" />
       <ProjectReference Include="..\VSharp.Utils\VSharp.Utils.fsproj" />
     </ItemGroup>
 
     <ItemGroup>
-      <PackageReference Update="FSharp.Core" Version="7.0.300" />
+      <PackageReference Update="FSharp.Core" Version="7.0.*" />
     </ItemGroup>
 
 </Project>
