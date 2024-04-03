@@ -1,5 +1,6 @@
 namespace VSharp.Core
 
+open System
 open VSharp
 
 module Substitution =
@@ -67,7 +68,10 @@ module Substitution =
         | Slice(part, slices) ->
             let slices' = List.map (fun (s, e, pos) -> recur s, recur e, recur pos) slices
             createSlice (recur part) slices'
-        | _ -> termSubst term
+        | _ ->
+            let termBeforeSubst = term
+            let termAfterSubst = termSubst termBeforeSubst
+            termAfterSubst
 
     and private substituteMany termSubst typeSubst timeSubst terms ctor =
         Merging.guardedCartesianProduct (substitute termSubst typeSubst timeSubst >> Merging.unguard) terms ctor

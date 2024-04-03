@@ -1,6 +1,7 @@
 namespace VSharp.Interpreter.IL
 
 open System.IO
+open System.Reflection
 open VSharp
 open System.Text
 open System.Collections.Generic
@@ -81,6 +82,24 @@ module CilState =
             contentRootPath : DirectoryInfo
             applicationName : string
         }
+        
+    and methodSequenceStats =
+        {
+            mutable touchedFields : pdict<term, FieldInfo pset>
+        }
+        
+        member private x.UpdateTouchedFields (target : term) (field : FieldInfo) =
+            match PersistentDict.tryFind x.touchedFields target with
+            | Some fields ->
+                x.touchedFields <- PersistentDict.add target (PersistentSet.add fields field) x.touchedFields
+            | None ->
+                x.touchedFields <- PersistentDict.add target (PersistentSet.ofSeq [field]) x.touchedFields
+        
+        member x.OnStFld (target : term) (field : FieldInfo) =
+            x.UpdateTouchedFields target field
+            
+        member x.OnLdFld (target : term) (field : FieldInfo) =
+            x.UpdateTouchedFields target field
 
     and [<ReferenceEquality>] cilState =
         {
@@ -114,9 +133,10 @@ module CilState =
             /// </summary>
             internalId : uint
             webConfiguration : webConfiguration option
+            methodSequenceStats : methodSequenceStats option
         }
 
-        static member private CommonCreateInitial (m : Method) (state : state) webConfiguration =
+        static member private CommonCreateInitial (m : Method) (state : state) webConfiguration methodSequenceStats =
             let ip = Instruction(0<offsets>, m)
             let approximateLoc = ip.ToCodeLocation() |> Option.get
             {
@@ -138,13 +158,18 @@ module CilState =
                 entryMethod = Some m
                 internalId = getNextStateId()
                 webConfiguration = webConfiguration
+                methodSequenceStats = methodSequenceStats 
             }
 
         static member CreateInitial (m : Method) (state : state) =
-            cilState.CommonCreateInitial m state None
+            cilState.CommonCreateInitial m state None None
 
         static member CreateWebInitial (m : Method) (state : state) (webConfiguration : webConfiguration) =
-            cilState.CommonCreateInitial m state (Some webConfiguration)
+            cilState.CommonCreateInitial m state (Some webConfiguration) None
+            
+        static member CreateMethodSequenceInitial (m : Method) (state : state) =
+            let stats = { touchedFields = PersistentDict.empty } 
+            cilState.CommonCreateInitial m state None (Some stats)
 
         member private x.ErrorReporter = lazy ErrorReporter(x)
 

@@ -24,6 +24,7 @@ type IBidirectionalSearcher =
     abstract member Remove : cilState -> unit
     abstract member StatesCount : int
 
+[<AllowNullLiteral>]
 type IForwardSearcher =
     abstract member Init : cilState seq -> unit
     abstract member Update : cilState * cilState seq -> unit
@@ -118,7 +119,7 @@ type BFSSearcher() =
 type IWeighter =
     abstract member Weight : cilState -> uint option
 
-type WeightedSearcher(weighter : IWeighter, storage : IPriorityCollection<cilState>) =
+type WeightedSearcher(weighter : IWeighter, storage : IPriorityCollection<cilState, uint>) =
     let optionWeight s =
         try
             weighter.Weight s

@@ -7,7 +7,7 @@ open VSharp
 open VSharp.Interpreter.IL
 open CilState
 
-type internal ExecutionTreeSearcher(randomSeed : int option) =
+type ExecutionTreeSearcher(randomSeed : int option) =
 
     let random =
         match randomSeed with

@@ -20,6 +20,8 @@ type IReporter =
     abstract member ReportIIE : InsufficientInformationException -> unit
     abstract member ReportInternalFail : Method -> Exception -> unit
     abstract member ReportCrash : Exception -> unit
+    
+    abstract member ReportState : cilState -> unit
 
 type EntryPointConfiguration(mainArguments : string[]) =
 
@@ -41,7 +43,8 @@ type private IExplorer =
     abstract member Reset: seq<Method> -> unit
     abstract member StartExploration: (Method * state) list -> (Method * EntryPointConfiguration * state) list -> Task
 
-type private SVMExplorer(explorationOptions: ExplorationOptions, statistics: SVMStatistics, reporter: IReporter) =
+// TODO: it was private, make private again
+type SVMExplorer(explorationOptions: ExplorationOptions, statistics: SVMStatistics, reporter: IReporter) =
 
     let options = explorationOptions.svmOptions
 
@@ -85,7 +88,7 @@ type private SVMExplorer(explorationOptions: ExplorationOptions, statistics: SVM
     let isSat pc =
         // TODO: consider trivial cases
         emptyState.pc <- pc
-        match SolverInteraction.checkSat emptyState with
+        match SolverInteraction.checkStateSat emptyState with
         | SolverInteraction.SmtSat _
         | SolverInteraction.SmtUnknown _ -> true
         | _ -> false
@@ -155,6 +158,7 @@ type private SVMExplorer(explorationOptions: ExplorationOptions, statistics: SVM
                     else Memory.ForcePopFrames (callStackSize - 1) state
                 match TestGenerator.state2test suite entryMethod state with
                 | Some test ->
+                    reporter.ReportState cilState
                     statistics.TrackFinished(cilState, isError)
                     match suite with
                     | Test -> reporter.ReportFinished test
@@ -207,7 +211,8 @@ type private SVMExplorer(explorationOptions: ExplorationOptions, statistics: SVM
     let shouldReleaseBranches() = options.releaseBranches && statistics.CurrentExplorationTime.TotalMilliseconds >= branchReleaseTimeout
     let isStepsLimitReached() = hasStepsLimit && statistics.StepsCount >= options.stepsLimit
 
-    static member private AllocateByRefParameters initialState (method : Method) =
+    // TODO: make private again, or move to some common module
+    static member AllocateByRefParameters initialState (method : Method) =
         let allocateIfByRef (pi : ParameterInfo) =
             let parameterType = pi.ParameterType
             if parameterType.IsByRef then
@@ -539,7 +544,7 @@ type public Explorer(options : ExplorationOptions, reporter: IReporter) =
             let trySubstituteTypeParameters method =
                 let emptyState = Memory.EmptyIsolatedState()
                 (Option.defaultValue method (x.TrySubstituteTypeParameters emptyState method), emptyState)
-            let isolated =
+            let isolated =  
                 isolated
                 |> Seq.map trySubstituteTypeParameters
                 |> Seq.map (fun (m, s) -> Application.getMethod m, s) |> Seq.toList

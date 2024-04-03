@@ -580,7 +580,9 @@ module internal Z3 =
                 let result =
                     match t.term with
                     | Concrete(obj, typ) -> x.EncodeConcrete obj typ
-                    | Constant(name, source, typ) -> x.EncodeConstant name.v source typ
+                    | Constant(name, source, typ) ->
+                        let constantName = name.v + "_" + t.term.GetHashCode().ToString()
+                        x.EncodeConstant constantName source typ
                     | Expression(op, args, typ) -> x.EncodeExpression t op args typ
                     | HeapRef(address, _) -> x.EncodeTerm address
                     | _ -> internalfail $"EncodeTerm: unexpected term: {t}"

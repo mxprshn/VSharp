@@ -10,6 +10,7 @@ using NUnit.Framework;
 using VSharp.CoverageTool;
 using VSharp.CSharpUtils;
 using VSharp.Explorer;
+using VSharp.Interpreter.IL;
 using VSharp.TestRenderer;
 
 namespace VSharp.Test.Benchmarks;
@@ -49,6 +50,7 @@ internal static class Benchmarks
         public void ReportIIE(InsufficientInformationException iie) => TestContext.Progress.WriteLine($"[IIE] {iie.Message}");
         public void ReportInternalFail(Method? method, Exception exn) => TestContext.Progress.WriteLine($"[ERROR] {method.Name}: {exn}");
         public void ReportCrash(Exception exn) => TestContext.Progress.WriteLine($"[CRASH] {exn}");
+        public void ReportState(CilState.cilState state) { }
     }
 
     // TODO: Add support for fuzzing

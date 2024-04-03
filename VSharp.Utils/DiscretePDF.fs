@@ -285,7 +285,7 @@ type public DiscretePDF<'a when 'a : equality>(comparer : IComparer<'a>, randomS
     member x.ToSeq = enumerate root
     member x.Count = count
 
-    interface IPriorityCollection<'a> with
+    interface IPriorityCollection<'a, uint> with
         override x.Insert item priority = x.Insert(item, priority)
         override x.Remove item = x.Remove(item)
         override x.Update item priority = x.Update(item, priority)
@@ -301,8 +301,8 @@ module public DiscretePDF =
     let insert (dpdf: DiscretePDF<'a>) item weight = dpdf.Insert(item, weight)
     let remove (dpdf: DiscretePDF<'a>) item = dpdf.Remove(item)
     let update (dpdf: DiscretePDF<'a>) item weight = dpdf.Update(item, weight)
-    let choose (dpdf: DiscretePDF<'a>) = (dpdf :> IPriorityCollection<'a>).Choose()
-    let chooseWithSelector (dpdf: DiscretePDF<'a>) selector = (dpdf :> IPriorityCollection<'a>).Choose(selector)
+    let choose (dpdf: DiscretePDF<'a>) = (dpdf :> IPriorityCollection<'a, uint>).Choose()
+    let chooseWithSelector (dpdf: DiscretePDF<'a>) selector = (dpdf :> IPriorityCollection<'a, uint>).Choose(selector)
     let contains (dpdf: DiscretePDF<'a>) item = dpdf.Contains(item)
     let tryGetWeight (dpdf: DiscretePDF<'a>) item = dpdf.TryGetWeight item
     let toSeq (dpdf: DiscretePDF<'a>) = dpdf.ToSeq
