@@ -1306,6 +1306,10 @@ type ILInterpreter() as this =
                 | TypeUtils.Native -> cilState.Read target
                 | _ when addressNeeded -> Memory.ReferenceField cilState.state target fieldId
                 | _ -> cilState.ReadField target fieldId
+            match cilState.methodSequenceStats with
+            | Some stats ->
+                stats.OnLdFld target fieldInfo
+            | None -> ()
             cilState.Push value
             k [cilState]
         x.NpeOrInvokeStatementCIL cilState target loadWhenTargetIsNotNull id
@@ -1324,6 +1328,10 @@ type ILInterpreter() as this =
             let reference =
                 if TypeUtils.isPointer fieldInfo.DeclaringType then targetRef
                 else Reflection.wrapField fieldInfo |> Memory.ReferenceField cilState.state targetRef
+            match cilState.methodSequenceStats with
+            | Some stats ->
+                stats.OnStFld targetRef fieldInfo
+            | None -> ()
             cilState.Write reference value |> k
         x.NpeOrInvokeStatementCIL cilState targetRef storeWhenTargetIsNotNull id
 

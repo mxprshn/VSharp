@@ -18,6 +18,13 @@ internal class VSharpTargets
         };
     }
 
+    public static IEnumerable<BenchmarkTarget> MethodSequences()
+    {
+        var assembly = Assembly.GetExecutingAssembly();
+        var type = assembly.ResolveType("MethodSequences");
+        yield return new BenchmarkTarget(type.GetMethod("TwoSetters"));
+    }
+    
     public static IEnumerable<BenchmarkTarget> LoanExam()
     {
         var assembly = Assembly.GetExecutingAssembly();

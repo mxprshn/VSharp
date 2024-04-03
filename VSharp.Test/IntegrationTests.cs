@@ -15,6 +15,7 @@ using NUnit.Framework.Internal.Commands;
 using VSharp.Core;
 using VSharp.CSharpUtils;
 using VSharp.Explorer;
+using VSharp.Interpreter.IL;
 using VSharp.TestRenderer;
 
 namespace VSharp.Test
@@ -226,6 +227,7 @@ namespace VSharp.Test
                 public void ReportIIE(InsufficientInformationException iie) {}
                 public void ReportInternalFail(Method method, Exception exn) => ExceptionDispatchInfo.Capture(exn).Throw();
                 public void ReportCrash(Exception exn) => ExceptionDispatchInfo.Capture(exn).Throw();
+                public void ReportState(CilState.cilState state) { }
             }
 
             public TestSvmCommand(

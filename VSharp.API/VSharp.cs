@@ -159,6 +159,8 @@ namespace VSharp
                 if (_isQuiet) return;
                 Logger.printLogString(Logger.Critical, $"{exn}");
             }
+
+            public void ReportState(CilState.cilState state) { }
         }
 
         private static Statistics StartExploration(

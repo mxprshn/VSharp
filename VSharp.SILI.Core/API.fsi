@@ -151,10 +151,13 @@ module API =
         val HeapReferenceToBoxReference : term -> term
 
         val AddConstraint : state -> term -> unit
-        val IsFalsePathCondition : state -> bool
+        val IsFalsePathCondition : pathCondition -> bool
+        val IsTruePathCondition : pathCondition -> bool
         val Contradicts : state -> term -> bool
         val PathConditionToSeq : pathCondition -> term seq
         val EmptyPathCondition : pathCondition
+        
+        val GetConstants : term seq -> term seq
 
     module Types =
 

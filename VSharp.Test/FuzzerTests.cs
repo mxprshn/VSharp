@@ -6,6 +6,7 @@ using System.Reflection;
 using NUnit.Framework;
 using VSharp.CSharpUtils;
 using VSharp.Explorer;
+using VSharp.Interpreter.IL;
 using VSharp.TestRenderer;
 
 namespace VSharp.Test;
@@ -41,6 +42,8 @@ public static class FuzzerTests
         {
             throw new Exception($"Crash: {exception}");
         }
+
+        public void ReportState(CilState.cilState state) { }
     }
 
     private static void PrepareOutputDirectory()

@@ -35,8 +35,8 @@ module public SolverInteraction =
         | Some s -> s.SetMaxBufferSize size
         | None -> ()
 
-    let private checkSatWithCtx state context =
-        let formula = PC.toSeq state.pc |> Seq.append context |> conjunction
+    let private checkSatWithCtx pc context =
+        let formula = PC.toSeq pc |> Seq.append context |> conjunction
         match solver with
         | Some s ->
             onSolverStarted()
@@ -44,9 +44,13 @@ module public SolverInteraction =
             onSolverStopped()
             result
         | None -> SmtUnknown ""
-
-    let checkSat state =
-        checkSatWithCtx state Seq.empty
+        
+    let checkSat formula =
+        checkSatWithCtx formula Seq.empty
+    
+    // TODO: replace with checkSat state.pc everywhere
+    let checkStateSat state =
+        checkSatWithCtx state.pc Seq.empty
 
     let rec private createContext (unequal : HashSet<term * term>) =
         let createCondition (a1, a2) =
@@ -57,7 +61,7 @@ module public SolverInteraction =
         match TypeSolver.checkInequality state with
         | Some unequal ->
             let context = createContext unequal
-            match checkSatWithCtx state context with
+            match checkSatWithCtx state.pc context with
             | SmtSat {mdl = model} as satWithModel ->
                 try
                     match TypeSolver.solveTypes model state with

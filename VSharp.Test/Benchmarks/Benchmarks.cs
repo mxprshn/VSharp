@@ -10,6 +10,7 @@ using NUnit.Framework;
 using VSharp.CoverageTool;
 using VSharp.CSharpUtils;
 using VSharp.Explorer;
+using VSharp.Interpreter.IL;
 using VSharp.TestRenderer;
 
 namespace VSharp.Test.Benchmarks;

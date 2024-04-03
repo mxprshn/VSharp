@@ -212,6 +212,7 @@ module API =
         let (|StackBufferReading|_|) src = Memory.(|StackBufferReading|_|) src
         let (|StaticsReading|_|) src = Memory.(|StaticsReading|_|) src
         let (|StructFieldSource|_|) src = Memory.(|StructFieldSource|_|) src
+        // TODO: why is it always Some???
         let rec (|StructFieldChain|_|) (src : ISymbolicConstantSource) =
             let rec structFieldChainRec acc = function
                 | Memory.StructFieldSource(baseSource, field) ->
@@ -255,10 +256,13 @@ module API =
             let constraints = conditionState.typeStorage.Constraints
             TypeStorage.addTypeConstraint constraints condition
 
-        let IsFalsePathCondition conditionState = PC.isFalse conditionState.pc
+        let IsFalsePathCondition pc = PC.isFalse pc
+        let IsTruePathCondition (pc : pathCondition) = PC.isEmpty pc
         let Contradicts state condition = PC.add state.pc condition |> PC.isFalse
         let PathConditionToSeq (pc : pathCondition) = PC.toSeq pc
         let EmptyPathCondition = PC.empty
+        
+        let GetConstants terms = discoverConstants terms :> term seq
 
     module Types =
         let SizeOf t = TypeUtils.internalSizeOf t

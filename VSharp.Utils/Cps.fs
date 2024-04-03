@@ -39,6 +39,11 @@ module public Cps =
             match xs with
             | [] -> k a
             | x::xs' -> foldrk f a xs' (fun a' -> f x a' k)
+            
+        let rec iterk f xs k =
+            match xs with
+            | [] -> k()
+            | x::xs' -> f x (fun _ -> iterk f xs' k)
 
         let rec mapFold f a xs k =
             match xs with
