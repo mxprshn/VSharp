@@ -25,11 +25,11 @@ module Utils =
             yield ParameterKey parameterInfo
     }
     
-    let getNonTrivialParametersCount (method : IMethod) : uint =
+    let getNonTrivialParametersCount (method : IMethod) : int =
         let nonTrivialParams =
             Seq.map (fun (p : ParameterInfo) -> p.ParameterType) method.Parameters |>
             Seq.filter (canBeCreatedBySolver >> not)
-        uint <| Seq.length nonTrivialParams
+        Seq.length nonTrivialParams
         
     let publicFlags =
         let (|||) = Microsoft.FSharp.Core.Operators.(|||)
