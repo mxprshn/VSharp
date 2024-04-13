@@ -1,5 +1,6 @@
 namespace VSharp.Utils
 
+open System
 open System.Collections.Generic
 open System.Linq
 
@@ -22,7 +23,8 @@ type BidictionaryPriorityQueue<'a, 'b when 'a : equality and 'b : comparison>() 
     let priorityToList = SortedDictionary<'b, LinkedList<'a>>()
     let isEmpty () = valuesToPriority.Count = 0
     let insert item priority =
-        assert(not <| valuesToPriority.ContainsKey item)
+        if valuesToPriority.ContainsKey item then
+            Console.WriteLine ""
         valuesToPriority.Add(item, priority)
         let priorityList = Dict.getValueOrUpdate priorityToList priority (fun () -> LinkedList<_>())
         priorityList.AddFirst item |> ignore

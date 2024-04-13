@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -74,6 +75,9 @@ public class MethodSequenceTests
             reporter.States.Where(s => !s.IsUnhandledExceptionOrError).ToList();
         var state = interestingStates[2];
 
+        var stopwatch = new Stopwatch();
+        stopwatch.Start();
+        
         var newSearcher = new MethodSequenceSearcher(state);
         
         for (;;)
@@ -84,6 +88,8 @@ public class MethodSequenceTests
                 continue;
             }
             
+            stopwatch.Stop();
+            Console.WriteLine(stopwatch.Elapsed);
             Console.WriteLine(foundSequences[0].ToString());
             
             Assert.Pass();
