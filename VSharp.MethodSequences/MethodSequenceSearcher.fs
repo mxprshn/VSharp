@@ -3,6 +3,7 @@ namespace VSharp.MethodSequences
 open System
 open System.Collections.Generic
 open Microsoft.VisualBasic.CompilerServices
+open Mono.Cecil.Cil
 open VSharp
 open VSharp.Core
 open VSharp.Explorer
@@ -38,6 +39,7 @@ type MethodSequenceSearcher(targetState : cilState) =
     let stack = LinkedList<searchStackFrame>()
     let framesByMethods = Dictionary<IMethod, List<searchStackFrame>>()
     
+    
     let targetState = targetState
     
     let methodExplorer: IMethodSymbolicExplorer = MethodSymbolicExplorer(fun () -> ExecutionTreeSearcher(Some 42))
@@ -59,15 +61,18 @@ type MethodSequenceSearcher(targetState : cilState) =
         List.exists (checkSetter setter varId) searchState.sequence.elements
         
     let hasCilStateTouchedFields (searchState : searchState) (cilState : cilState) =
-        let constantsInCondition = Terms.GetConstants (PathConditionToSeq searchState.condition)
         let fieldsInCondition = HashSet<fieldId>()
-        for constant in constantsInCondition do
-            match constant.term with
-            | Constant(_, source, _) ->
-                match Utils.getFieldsFromConstant source with
-                | [] -> ()
-                | fields -> for f in fields do fieldsInCondition.Add f |> ignore
-            | _ -> ()
+        
+        for target in searchState.targets.Values do
+            // TODO: conditions in targets are similar
+            for constant in Terms.GetConstants (PathConditionToSeq target.condition) do
+                match constant.term with
+                | Constant(_, source, _) ->
+                    match Utils.getFieldsFromConstant source with
+                    | [] -> ()
+                    | fields -> for f in fields do fieldsInCondition.Add f |> ignore
+                | _ -> ()
+
         let touchedFields =
             match cilState.methodSequenceStats with
             | Some stats ->
@@ -140,25 +145,33 @@ type MethodSequenceSearcher(targetState : cilState) =
         match action with
         | PrependCilState(cilState, _) -> cilState.entryMethod.Value :> IMethod = method
             
-    let onExplorationFinished (method : IMethod) =
-        let framesToRemove = List()
-        let framesByMethod = framesByMethods[method]
-        for frame in framesByMethod do
-            if not <| Seq.exists (isPrependMethodCall method) frame.actions then 
-                frame.varSubsts.Remove method |> ignore
-            if frame.varSubsts.Count = 0 then
-                framesToRemove.Add frame
-        for frameToRemove in framesToRemove do
-            stack.Remove frameToRemove |> ignore
-            framesByMethod.Remove frameToRemove |> ignore 
     do
         methodExplorer.OnStates.Add onCilStatesExplored
-        methodExplorer.OnExplorationFinished.Add onExplorationFinished
         let stackToVar = Substitutions.mapThisAndParametersToVars targetState.entryMethod.Value
         let searchState = SearchState.fromCilState targetState stackToVar
         let newFrame = newFrame searchState
         stack.AddFirst(LinkedListNode(newFrame))
         actionCount <- actionCount + int newFrame.actions.Count
+        
+    // TODO: dumb name, rename
+    // TODO: use incremental solver here
+    let prependStateToTargets (cilState : cilState) (mappingState : state) (targets : Dictionary<cilState, target>) =
+        let newTargets = Dictionary()
+        for KeyValue(targetCilState, target) in targets do
+            let wlp = Memory.WLP cilState.state target.condition
+        
+            if not <| IsFalsePathCondition wlp then
+                match SolverInteraction.checkSat wlp with
+                | SolverInteraction.SmtSat satInfo -> 
+                    // TODO: check case when stackToVar is empty
+                    let wlp = Memory.WLP mappingState wlp
+                    let newTarget = {
+                        condition = wlp
+                        model = satInfo.mdl
+                    }
+                    newTargets[targetCilState] <- newTarget
+                | _ -> ()
+        newTargets
         
     let prependState (searchState : searchState) (cilState : cilState) (subst : varSubst) =
         let getRetValTerm() =
@@ -195,44 +208,27 @@ type MethodSequenceSearcher(targetState : cilState) =
  
         Memory.NewStackFrame cilState.state None (List.ofSeq mappingFrame)
         
-        let wlp = Memory.WLP cilState.state searchState.condition
+        let stackToVar = Substitutions.mapThisAndParametersToVars method
+        let substitutedVars = PersistentDict.keys subst
+        let remainingVars = List.filter (fun v -> not <| Seq.contains v substitutedVars) searchState.variables
+        let mappingState = Substitutions.createMappingState method stackToVar remainingVars
         
-        if IsFalsePathCondition wlp then
-            Memory.PopFrame cilState.state
+        let newTargets = prependStateToTargets cilState mappingState searchState.targets
+        
+        Memory.PopFrame cilState.state
+        
+        if newTargets.Count = 0 then
             Unsat
         else
-            match SolverInteraction.checkSat wlp with
-            | SolverInteraction.SmtUnsat _ | SolverInteraction.SmtUnknown _ ->
-                Memory.PopFrame cilState.state
-                Unsat
-            | SolverInteraction.SmtSat satInfo -> 
-                let stackToVar = Substitutions.mapThisAndParametersToVars method
-                let substitutedVars = PersistentDict.keys subst
-                let remainingVars = List.filter (fun v -> not <| Seq.contains v substitutedVars) searchState.variables
-                let mappingState = Substitutions.createMappingState method stackToVar remainingVars
-                // TODO: check case when stackToVar is empty
-                let wlp = Memory.WLP mappingState wlp
-                let newState = {
-                    condition = wlp
-                    model = satInfo.mdl
-                    variables = remainingVars @ (PersistentDict.values stackToVar |> Seq.toList)
-                    sequence = MethodSequence.addCall searchState.sequence method stackToVar subst
-                    parent = Some searchState
-                }
-                
-                Memory.PopFrame cilState.state
-                Sat newState
-                
-    let tryRemoveFrame (frame : searchStackFrame) =
-        let methodsToRemove = Seq.filter methodExplorer.IsExplorationFinished frame.varSubsts.Keys
-        for methodToRemove in methodsToRemove do
-            if not <| Seq.exists (isPrependMethodCall methodToRemove) frame.actions then 
-                frame.varSubsts.Remove methodToRemove |> ignore
-        if frame.varSubsts.Count = 0 then
-            stack.Remove frame |> ignore
-            for method in frame.varSubsts.Keys do
-                framesByMethods[method].Remove frame |> ignore
-
+            let newState = {
+                targets = newTargets
+                variables = remainingVars @ (PersistentDict.values stackToVar |> Seq.toList)
+                sequence = MethodSequence.addCall searchState.sequence method stackToVar subst
+                parent = Some searchState
+                children = List() 
+            }
+            searchState.children.Add newState
+            Sat newState
     
     let rec makeStep (startFromFrame : LinkedListNode<searchStackFrame>) : searchStepResult =
         if stack.Count = 0 then
@@ -240,11 +236,8 @@ type MethodSequenceSearcher(targetState : cilState) =
         else
             let mutable currentFrameNode = startFromFrame
             while currentFrameNode.Value.actions.Count = 0 && currentFrameNode.Next <> null do
-                let temp = currentFrameNode.Value
                 currentFrameNode <- currentFrameNode.Next
-                tryRemoveFrame temp
             if currentFrameNode.Value.actions.Count = 0 && currentFrameNode.Next = null then
-                tryRemoveFrame currentFrameNode.Value
                 NoMoreSteps
             else
                 let currentFrame = currentFrameNode.Value
@@ -252,7 +245,7 @@ type MethodSequenceSearcher(targetState : cilState) =
                 currentFrame.actions.RemoveFirst()
                 actionCount <- actionCount - 1
                 match action.Value with
-                | PrependCilState(cilState, substIndex) as action ->
+                | PrependCilState(cilState, substIndex) ->
                     let method = cilState.entryMethod.Value
                     let methodSubstsCount = currentFrame.varSubsts[method].Length
                     if substIndex >= methodSubstsCount then
@@ -273,7 +266,6 @@ type MethodSequenceSearcher(targetState : cilState) =
                                 SequenceFound newState.sequence
                             else
                                 Continue
-                | _ -> __unreachable__()
     let mutable makeExplorerStep = true
     member x.MakeStep() =
         makeExplorerStep <- not makeExplorerStep

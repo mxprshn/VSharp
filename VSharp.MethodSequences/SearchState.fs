@@ -1,16 +1,22 @@
 namespace VSharp.MethodSequences
 
+open System.Collections.Generic
 open VSharp
 open VSharp.Core
 open VSharp.Core.SolverInteraction
 open VSharp.Interpreter.IL.CilState
 
-type searchState = {
+type target = {
     condition : pathCondition
     model : model
+}
+
+type searchState = {
+    targets : Dictionary<cilState, target>
     variables : variableId list
     sequence : methodSequence
     parent : searchState option
+    children : List<searchState>
 } with
     override x.ToString() =
         x.sequence.ToString()
@@ -27,12 +33,18 @@ module SearchState =
             | SmtUnsat _ | SmtUnknown _ ->
                 internalfailf "Unsat WLP of initial state mapping"
             | SmtSat satInfo ->
-                {
+                let target = {
                     condition = wlp
                     model = satInfo.mdl
+                }
+                let targets = Dictionary()
+                targets[cilState] <- target
+                {
+                    targets = targets
                     variables = PersistentDict.values stackToVar |> List.ofSeq
                     sequence = MethodSequence.createInitial entryMethod stackToVar
-                    parent = None 
+                    parent = None
+                    children = List() 
                 }
                 
     let isComplete (state : searchState) =
