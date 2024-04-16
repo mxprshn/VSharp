@@ -1,5 +1,6 @@
 namespace VSharp.MethodSequences
 
+open System
 open System.Reflection
 open System.Reflection.Emit
 open VSharp
@@ -7,7 +8,9 @@ open VSharp.Core
 
 module MethodWrappers =
     
-    let private ctorWrapperName = "CtorCall"
+    let private ctorWrapperName = "Ctor"
+    let private nullCtorName = "Null"
+    
     let private wrappersAssemblyName = "MethodSequenceWrappers"
 
     let private wrappersModuleBuilder =
@@ -17,6 +20,27 @@ module MethodWrappers =
         
     let isConstructorWrapper (method : IMethod) : bool =
         method.Name = ctorWrapperName && method.DeclaringType.Assembly.GetName().Name = wrappersAssemblyName
+        
+    let getNullConstructor (typ : Type): IMethod =
+        assert(not <| typ.IsValueType)
+        let ctorTypeName = $"NullCtor<{typ.Name}>-{typ.MetadataToken}"
+        let ctorMethodName = nullCtorName
+        let existingType = wrappersModuleBuilder.GetType(ctorTypeName, false, false)
+        let typ =
+            if existingType <> null then existingType
+            else
+                let typeBuilder = wrappersModuleBuilder.DefineType ctorTypeName
+                let (|||) = Microsoft.FSharp.Core.Operators.(|||)
+                let methodBuilder = typeBuilder.DefineMethod(ctorMethodName, MethodAttributes.Public ||| MethodAttributes.Static)
+                let returnType = typ
+                methodBuilder.SetReturnType returnType
+                let generator = methodBuilder.GetILGenerator()
+                generator.Emit(OpCodes.Ldnull)
+                generator.Emit OpCodes.Ret
+                typeBuilder.CreateType()
+        let wrapperMethod = typ.GetMethod ctorMethodName |> Application.getMethod
+        wrapperMethod :> IMethod
+        
         
     let getConstructorWrapper (ctor : IMethod): IMethod =
         assert ctor.IsConstructor

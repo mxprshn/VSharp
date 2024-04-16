@@ -110,14 +110,22 @@ type MethodSequenceSearcher(targetState : cilState) =
         for typ, variables in primitiveVariables do
             let substTargets = Utils.nonEmptySubsets (Seq.toList variables) |> List.filter (not << List.isEmpty)
             // We can substitute return value of the method to any subset of existing variables
-            for ctor in typ.GetConstructors() |> Seq.map Application.getMethod |> Seq.sortByDescending Utils.getNonTrivialParametersCount do
-                let wrapper = MethodWrappers.getConstructorWrapper ctor
+            let ctors = seq {
+                yield! typ.GetConstructors()
+                       |> Seq.map Application.getMethod
+                       |> Seq.sortByDescending Utils.getNonTrivialParametersCount
+                       |> Seq.map MethodWrappers.getConstructorWrapper
+                       
+                if not <| typ.IsValueType then
+                    yield MethodWrappers.getNullConstructor typ
+            }
+            for ctor in ctors do
                 let substs = List<varSubst>()
                 for substTarget in substTargets do
                     let subst = List.map (fun target -> target, RetVal) substTarget |> PersistentDict.ofSeq
                     substs.Add subst
-                varSubsts[wrapper] <- Seq.toList substs
-                visitMethod wrapper (fun _ -> true)
+                varSubsts[ctor] <- Seq.toList substs
+                visitMethod ctor (fun _ -> true)
                 
         frame
 
