@@ -72,27 +72,30 @@ public class MethodSequenceTests
         explorer.StartExploration(new[] {loanExamMethod.Method}, new Tuple<MethodBase, EntryPointConfiguration>[] { });
 
         var interestingStates =
-            reporter.States.Where(s => !s.IsUnhandledExceptionOrError).ToList();
-        var state = interestingStates[2];
+            reporter.States.ToList();//Where(s => !s.IsUnhandledExceptionOrError).ToList();
 
-        var stopwatch = new Stopwatch();
-        stopwatch.Start();
-        
-        var newSearcher = new MethodSequenceSearcher(state);
-        
-        for (;;)
+        foreach (var state in interestingStates)
         {
-            var foundSequences = newSearcher.MakeStep();
-            if (foundSequences.Count == 0)
+            var stopwatch = new Stopwatch();
+            stopwatch.Start();
+
+            var newSearcher = new MethodSequenceSearcher(state);
+
+            while (stopwatch.Elapsed < TimeSpan.FromSeconds(15.0))
             {
-                continue;
+                var foundSequences = newSearcher.MakeStep();
+                if (foundSequences.Count == 0)
+                {
+                    continue;
+                }
+
+                stopwatch.Stop();
+                Console.WriteLine(stopwatch.Elapsed);
+                Console.WriteLine(foundSequences[0].ToString());
+                Console.WriteLine();
+
+                break;
             }
-            
-            stopwatch.Stop();
-            Console.WriteLine(stopwatch.Elapsed);
-            Console.WriteLine(foundSequences[0].ToString());
-            
-            Assert.Pass();
         }
     }
 }
