@@ -13,14 +13,19 @@ public class BenchmarkTarget
     public MethodBase? Method { get; private set; }
     public IReadOnlyList<Type> Types => _types;
     public Assembly Assembly { get; private set; }
+    public string SuiteName { get; private set; }
+    public string Id { get; private set; }
 
-    public BenchmarkTarget(MethodBase method)
+    public BenchmarkTarget(MethodBase method, string suiteName)
     {
         Assembly = method.Module.Assembly;
         Method = method;
+        SuiteName = suiteName;
+
+        Id = $"{suiteName}-{method.DeclaringType}-{method.Name}-{method.MetadataToken}";
     }
 
-    public BenchmarkTarget(Assembly assembly, string className)
+    public BenchmarkTarget(Assembly assembly, string className, string suiteName)
     {
         var type = assembly.ResolveType(className);
         if (type is null)
@@ -30,6 +35,9 @@ public class BenchmarkTarget
 
         Assembly = assembly;
         _types.Add(type);
+        SuiteName = suiteName;
+
+        Id = $"{suiteName}-{type.Name}-{type.MetadataToken}";
     }
 
     public override string ToString()
@@ -52,7 +60,7 @@ public class BenchmarkTarget
         throw new UnreachableException("Inconsistent benchmark target");
     }
 
-    public static IEnumerable<BenchmarkTarget> ForAllMethods(Assembly assembly, IEnumerable<string> classNames)
+    public static IEnumerable<BenchmarkTarget> ForAllMethods(Assembly assembly, IEnumerable<string> classNames, string suiteName)
     {
         foreach (var className in classNames)
         {
@@ -64,7 +72,7 @@ public class BenchmarkTarget
 
             foreach (var method in type.EnumerateExplorableMethods())
             {
-                yield return new BenchmarkTarget(method);
+                yield return new BenchmarkTarget(method, suiteName);
             }
         }
     }

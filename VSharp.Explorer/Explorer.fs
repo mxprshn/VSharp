@@ -15,13 +15,11 @@ open VSharp.Explorer
 open VSharp.Solver
 
 type IReporter =
-    abstract member ReportFinished : UnitTest -> unit
-    abstract member ReportException : UnitTest -> unit
+    abstract member ReportFinished : UnitTest -> cilState -> unit
+    abstract member ReportException : UnitTest -> cilState -> unit
     abstract member ReportIIE : InsufficientInformationException -> unit
     abstract member ReportInternalFail : Method -> Exception -> unit
     abstract member ReportCrash : Exception -> unit
-    
-    abstract member ReportState : cilState -> unit
 
 type EntryPointConfiguration(mainArguments : string[]) =
 
@@ -178,7 +176,6 @@ type SVMExplorer(explorationOptions: ExplorationOptions, statistics: SVMStatisti
                     else Memory.ForcePopFrames (callStackSize - 1) state
                 match TestGenerator.state2test suite entryMethod state with
                 | Some test ->
-                    reporter.ReportState cilState
                     statistics.TrackFinished(cilState, isError)
                     if options.savePathReplays then
                         match pathReplayTrackingSearcher with
@@ -188,8 +185,8 @@ type SVMExplorer(explorationOptions: ExplorationOptions, statistics: SVMStatisti
                             test.PathReplay <- Some pathReplay
                         | None -> __unreachable__()
                     match suite with
-                    | Test -> reporter.ReportFinished test
-                    | Error _ -> reporter.ReportException test
+                    | Test -> reporter.ReportFinished test cilState
+                    | Error _ -> reporter.ReportException test cilState
                     if isCoverageAchieved() then
                         isStopped <- true
                 | None -> ()
@@ -572,7 +569,7 @@ type public Explorer(options : ExplorationOptions, reporter: IReporter) =
             let trySubstituteTypeParameters method =
                 let emptyState = Memory.EmptyIsolatedState()
                 (Option.defaultValue method (x.TrySubstituteTypeParameters emptyState method), emptyState)
-            let isolated =  
+            let isolated =
                 isolated
                 |> Seq.map trySubstituteTypeParameters
                 |> Seq.map (fun (m, s) -> Application.getMethod m, s) |> Seq.toList

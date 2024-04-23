@@ -19,10 +19,10 @@ public class PathReplayTests
     [TestCaseSource(nameof(TestCases))]
     public void CheckReplayedPath(string typeName, string methodName, string replayPath, Action<UnitTest> checker)
     {
-        var unitTests = new UnitTests(Directory.GetCurrentDirectory());
+        var unitTests = new UnitTests(Directory.GetCurrentDirectory(), createSubdir: true);
         var serializer = new XmlSerializer(typeof(pathReplay));
         var replay = serializer.Deserialize(File.OpenRead(replayPath)) as pathReplay;
-        
+
         var svmOptions = new SVMOptions(
             explorationMode: explorationMode.NewPathReplayMode(replay.forkIndices),
             recThreshold: 1,
@@ -37,7 +37,7 @@ public class PathReplayTests
             stepsLimit: 10000,
             savePathReplays: false
         );
-        
+
         var explorationModeOptions = Explorer.explorationModeOptions.NewSVM(svmOptions);
 
         var explorationOptions = new ExplorationOptions(
@@ -46,10 +46,10 @@ public class PathReplayTests
             explorationModeOptions: explorationModeOptions
         );
 
-        var reporter = new TestReporter(unitTests);
+        var reporter = new TestReporter(unitTests, TestContext.Progress);
 
         using var explorer = new Explorer.Explorer(explorationOptions, reporter);
-        
+
         var assembly = Assembly.GetExecutingAssembly();
         var type = assembly.ResolveType(typeName);
         var method = type.GetMethod(methodName);
@@ -63,19 +63,19 @@ public class PathReplayTests
         var generatedTest = UnitTest.Deserialize(generatedTestFile.FullName);
         checker(generatedTest);
     }
-    
+
     private static void ReturnValueEquals<T>(UnitTest test, T expected)
     {
         var returnValue = (T)test.Expected;
         Assert.AreEqual(expected, returnValue);
     }
-    
+
     public static IEnumerable<object[]> TestCases()
     {
         var rootTestsDirectory = new DirectoryInfo(TestContext.CurrentContext.TestDirectory);
         rootTestsDirectory = rootTestsDirectory.Parent.Parent.Parent;
         var rootTestDataDirectory = Path.Combine(rootTestsDirectory.FullName, "Tests", "PathReplayTestsData");
-        
+
         const string conditionalClassName = nameof(Conditional);
         const string declareAfterReturnName = nameof(Conditional.DeclareAfterReturn);
         var declareAfterReturnDir = Path.Combine(rootTestDataDirectory, "DeclareAfterReturn");

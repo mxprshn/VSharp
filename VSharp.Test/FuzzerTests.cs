@@ -18,12 +18,12 @@ public static class FuzzerTests
 
     private class FuzzerReporter : IReporter
     {
-        public void ReportFinished(UnitTest test)
+        public void ReportFinished(UnitTest test, CilState.cilState state)
         {
             throw new Exception("Unreachable");
         }
 
-        public void ReportException(UnitTest test)
+        public void ReportException(UnitTest test, CilState.cilState state)
         {
             throw new Exception("Unreachable");
         }

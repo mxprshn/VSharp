@@ -44,18 +44,18 @@ internal class LifetimesTargets
     public static IEnumerable<BenchmarkTarget> Collections()
     {
         var assembly = Benchmarks.LoadBenchmarkAssembly(LifetimesSuiteName, LifetimesDllName);
-        return BenchmarkTarget.ForAllMethods(assembly, CollectionsClasses);
+        return BenchmarkTarget.ForAllMethods(assembly, CollectionsClasses, LifetimesSuiteName);
     }
 
     public static IEnumerable<BenchmarkTarget> CompactList()
     {
         var assembly = Benchmarks.LoadBenchmarkAssembly(LifetimesSuiteName, LifetimesDllName);
-        return new List<BenchmarkTarget> { new BenchmarkTarget(assembly, "CompactList") };
+        return new List<BenchmarkTarget> { new BenchmarkTarget(assembly, "CompactList", "") };
     }
 
     public static IEnumerable<BenchmarkTarget> Util()
     {
         var assembly = Benchmarks.LoadBenchmarkAssembly(LifetimesSuiteName, LifetimesDllName);
-        return BenchmarkTarget.ForAllMethods(assembly, UtilClasses);
+        return BenchmarkTarget.ForAllMethods(assembly, UtilClasses, LifetimesSuiteName);
     }
 }

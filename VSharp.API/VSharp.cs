@@ -110,7 +110,7 @@ namespace VSharp
 
     public static class TestGenerator
     {
-        private class Reporter: IReporter
+        private class Reporter : IReporter
         {
             private readonly UnitTests _unitTests;
             private readonly bool _isQuiet;
@@ -121,8 +121,12 @@ namespace VSharp
                 _isQuiet = isQuiet;
             }
 
-            public void ReportFinished(UnitTest unitTest) => _unitTests.GenerateTest(unitTest);
-            public void ReportException(UnitTest unitTest) => _unitTests.GenerateError(unitTest);
+            public void ReportFinished(UnitTest unitTest, CilState.cilState state) =>
+                _unitTests.GenerateTest(unitTest);
+
+            public void ReportException(UnitTest unitTest, CilState.cilState state) =>
+                _unitTests.GenerateError(unitTest);
+
             public void ReportIIE(InsufficientInformationException iie) {}
 
             public void ReportInternalFail(Method? method, Exception exn)
@@ -159,8 +163,6 @@ namespace VSharp
                 if (_isQuiet) return;
                 Logger.printLogString(Logger.Critical, $"{exn}");
             }
-
-            public void ReportState(CilState.cilState state) { }
         }
 
         private static Statistics StartExploration(
@@ -171,7 +173,7 @@ namespace VSharp
         {
             Logger.changeVerbosityTuple(Logger.defaultTag, options.Verbosity.ToLoggerLevel());
 
-            var unitTests = new UnitTests(options.OutputDirectory);
+            var unitTests = new UnitTests(options.OutputDirectory, createSubdir: true);
             var baseSearchMode = options.SearchStrategy.ToSiliMode();
             // TODO: customize search strategies via console options
 

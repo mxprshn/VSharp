@@ -36,6 +36,8 @@ Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "VSharp.CoverageTool", "VSha
 EndProject
 Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "VSharp.MethodSequences", "VSharp.MethodSequences\VSharp.MethodSequences.fsproj", "{350736D2-66C8-44CB-9387-71446954B378}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VSharp.MethodSequencesBenchmarks", "VSharp.MethodSequencesBenchmarks\VSharp.MethodSequencesBenchmarks.csproj", "{51AB2926-B0A3-4546-BBC7-D8485E8F8B71}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -149,7 +151,13 @@ Global
 		{350736D2-66C8-44CB-9387-71446954B378}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{350736D2-66C8-44CB-9387-71446954B378}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{350736D2-66C8-44CB-9387-71446954B378}.Release|Any CPU.Build.0 = Release|Any CPU
-		{350736D2-66C8-44CB-9387-71446954B378}.DebugTailRec|Any CPU.ActiveCfg = Debug|Any CPU
-		{350736D2-66C8-44CB-9387-71446954B378}.DebugTailRec|Any CPU.Build.0 = Debug|Any CPU
+		{350736D2-66C8-44CB-9387-71446954B378}.DebugTailRec|Any CPU.ActiveCfg = DebugTailRec|Any CPU
+		{350736D2-66C8-44CB-9387-71446954B378}.DebugTailRec|Any CPU.Build.0 = DebugTailRec|Any CPU
+		{51AB2926-B0A3-4546-BBC7-D8485E8F8B71}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{51AB2926-B0A3-4546-BBC7-D8485E8F8B71}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{51AB2926-B0A3-4546-BBC7-D8485E8F8B71}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{51AB2926-B0A3-4546-BBC7-D8485E8F8B71}.Release|Any CPU.Build.0 = Release|Any CPU
+		{51AB2926-B0A3-4546-BBC7-D8485E8F8B71}.DebugTailRec|Any CPU.ActiveCfg = DebugTailRec|Any CPU
+		{51AB2926-B0A3-4546-BBC7-D8485E8F8B71}.DebugTailRec|Any CPU.Build.0 = DebugTailRec|Any CPU
 	EndGlobalSection
 EndGlobal

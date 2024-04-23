@@ -71,6 +71,8 @@ module Substitution =
         | _ ->
             let termBeforeSubst = term
             let termAfterSubst = termSubst termBeforeSubst
+            //Console.WriteLine("Before: " + termBeforeSubst.ToString())
+            //Console.WriteLine("After: " + termAfterSubst.ToString())
             termAfterSubst
 
     and private substituteMany termSubst typeSubst timeSubst terms ctor =

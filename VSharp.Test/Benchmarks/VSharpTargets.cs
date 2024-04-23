@@ -4,7 +4,7 @@ using VSharp.CSharpUtils;
 
 namespace VSharp.Test.Benchmarks;
 
-internal class VSharpTargets
+public class VSharpTargets
 {
     public static IEnumerable<BenchmarkTarget> Strings()
     {
@@ -12,9 +12,9 @@ internal class VSharpTargets
         var type = assembly.ResolveType("Strings");
         return new List<BenchmarkTarget>
         {
-            new(type.GetMethod("FormatInt")),
-            new(type.GetMethod("FormatUInt32")),
-            new(type.GetMethod("StringFormat2"))
+            new(type.GetMethod("FormatInt"), "vsharp"),
+            new(type.GetMethod("FormatUInt32"), "vsharp"),
+            new(type.GetMethod("StringFormat2"), "vsharp")
         };
     }
 
@@ -22,16 +22,16 @@ internal class VSharpTargets
     {
         var assembly = Assembly.GetExecutingAssembly();
         var type = assembly.ResolveType("MethodSequences");
-        yield return new BenchmarkTarget(type.GetMethod("TwoSetters"));
+        yield return new BenchmarkTarget(type.GetMethod("TwoSetters"), "vsharp");
     }
-    
+
     public static IEnumerable<BenchmarkTarget> LoanExam()
     {
         var assembly = Assembly.GetExecutingAssembly();
         var type = assembly.ResolveType("LoanExam");
         return new List<BenchmarkTarget>
         {
-            new(type.GetMethod("Build"))
+            new(type.GetMethod("Build"), "vsharp")
         };
     }
 }

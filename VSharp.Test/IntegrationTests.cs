@@ -222,8 +222,8 @@ namespace VSharp.Test
                     _unitTests = unitTests;
                 }
 
-                public void ReportFinished(UnitTest unitTest) => _unitTests.GenerateTest(unitTest);
-                public void ReportException(UnitTest unitTest) => _unitTests.GenerateError(unitTest);
+                public void ReportFinished(UnitTest unitTest, CilState.cilState state) => _unitTests.GenerateTest(unitTest);
+                public void ReportException(UnitTest unitTest, CilState.cilState state) => _unitTests.GenerateError(unitTest);
                 public void ReportIIE(InsufficientInformationException iie) {}
                 public void ReportInternalFail(Method method, Exception exn) => ExceptionDispatchInfo.Capture(exn).Throw();
                 public void ReportCrash(Exception exn) => ExceptionDispatchInfo.Capture(exn).Throw();
@@ -440,7 +440,7 @@ namespace VSharp.Test
 
                 try
                 {
-                    var unitTests = new UnitTests(Directory.GetCurrentDirectory());
+                    var unitTests = new UnitTests(Directory.GetCurrentDirectory(), createSubdir: true);
 
                     _options = new SVMOptions(
                         explorationMode: explorationMode.NewTestCoverageMode(_coverageZone, _searchStrat),

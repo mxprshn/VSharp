@@ -13,6 +13,6 @@ internal class BizHawkTargets
         var assembly = Benchmarks.LoadBenchmarkAssembly(BizHawkSuiteName, CoresDllName);
         var type = assembly.ResolveType("LR35902");
         var method = type.GetMethod("ExecuteOne");
-        return new List<BenchmarkTarget> { new(method) };
+        return new List<BenchmarkTarget> { new(method, BizHawkSuiteName) };
     }
 }

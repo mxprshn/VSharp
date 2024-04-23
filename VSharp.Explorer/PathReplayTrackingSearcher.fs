@@ -9,9 +9,9 @@ type forkIndices = int list
 
 type internal PathReplayTrackingSearcher(baseSearcher : IForwardSearcher) =
     let baseSearcher = baseSearcher
-    
+
     // TODO: use the same trees here and in ExecutionTreeSearcher
-    let trees = Dictionary<Method, ExecutionTree<cilState>>()  
+    let trees = Dictionary<Method, ExecutionTree<cilState>>()
     let methods = List<Method>()
 
     let init (initialStates : cilState seq) =
@@ -36,21 +36,19 @@ type internal PathReplayTrackingSearcher(baseSearcher : IForwardSearcher) =
                 let wasRemoved = methods.Remove entryMethod
                 assert wasRemoved
         baseSearcher.Remove state
-        
+
     let reset() =
         trees.Clear()
         methods.Clear()
         baseSearcher.Reset()
 
     let update (parent : cilState) newStates =
-        if Seq.length newStates > 2 then
-            Console.WriteLine ""
         let entryMethod = parent.EntryMethod
         let tree = ref null
         if trees.TryGetValue(entryMethod, tree) then
             tree.Value.AddFork parent newStates |> ignore
         baseSearcher.Update(parent, newStates)
-        
+
     member this.ExportForkIndices (state : cilState) : forkIndices =
         let entryMethod = state.EntryMethod
         let tree = ref null
