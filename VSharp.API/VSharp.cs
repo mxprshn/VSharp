@@ -188,7 +188,8 @@ namespace VSharp
                     checkAttributes: true,
                     stopOnCoverageAchieved: 100,
                     randomSeed: options.RandomSeed,
-                    stepsLimit: options.StepsLimit
+                    stepsLimit: options.StepsLimit,
+                    savePathReplays: options.SavePathReplays
                 );
 
             var fuzzerOptions =

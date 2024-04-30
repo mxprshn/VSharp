@@ -2,6 +2,7 @@ namespace VSharp.Explorer
 
 open System.Diagnostics
 open System.IO
+open VSharp
 
 type searchMode =
     | DFSMode
@@ -21,6 +22,7 @@ type coverageZone =
 type explorationMode =
     | TestCoverageMode of coverageZone * searchMode
     | StackTraceReproductionMode of StackTrace
+    | PathReplayMode of int seq
 
 type fuzzerIsolation =
     | Process
@@ -42,6 +44,7 @@ type SVMOptions = {
     stopOnCoverageAchieved : int
     randomSeed : int
     stepsLimit : uint
+    savePathReplays : bool
 }
 
 type explorationModeOptions =
@@ -73,5 +76,6 @@ with
             match x.explorationMode with
             | TestCoverageMode (coverageZone, _) -> coverageZone 
             | StackTraceReproductionMode _ -> failwith ""
+            | PathReplayMode _ -> MethodZone
         | Combined (_, x) -> x.coverageZone
         | Fuzzing x -> x.coverageZone

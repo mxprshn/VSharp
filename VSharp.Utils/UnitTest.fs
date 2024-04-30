@@ -75,9 +75,14 @@ type UnitTest private (m : MethodBase, info : testInfo, mockStorage : MockStorag
     let mutable extraAssemblyLoadDirs : string list = [Directory.GetCurrentDirectory()]
     let mutable patchId = 0
     let mutable externMocks = info.externMocks |> ResizeArray
+    let mutable pathReplay : pathReplay option = None
 
     new(m : MethodBase) =
         UnitTest(m, testInfo.OfMethod m, MockStorage(), false)
+        
+    member this.PathReplay
+        with get () = pathReplay
+        and set value = pathReplay <- value
 
     member x.Method with get() = m
     member x.ThisArg

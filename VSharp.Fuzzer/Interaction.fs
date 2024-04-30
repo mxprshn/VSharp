@@ -23,7 +23,7 @@ type private SiliStatisticConverter() =
         (methodInfo: System.Collections.Generic.Dictionary<int, RawMethodInfo>)
         (loc: RawCoverageLocation seq) =
 
-        let getMethod l =
+        let getMethod (l : RawMethodInfo) =
             match methods.TryGetValue(l.methodToken) with
             | true, m -> m
             | false, _ ->

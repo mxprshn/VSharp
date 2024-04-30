@@ -8,6 +8,7 @@ open VSharp
 type UnitTests(outputDir : string) =
     let testPrefix = "VSharp.tests."
     let testExtension = ".vst"
+    let pathReplayExtension = ".vsr"
     let mutable testNumber = 0u
     let mutable errorNumber = 0u
     let rootDir = Directory.CreateDirectory(if String.IsNullOrWhiteSpace outputDir then Directory.GetCurrentDirectory() else outputDir)
@@ -25,6 +26,13 @@ type UnitTests(outputDir : string) =
 
     let generateTest (test : UnitTest) (name : string) =
         test.Serialize $"%s{currentDir.FullName}%c{Path.DirectorySeparatorChar}%s{name}%s{testExtension}"
+        
+    let savePathReplay (test : UnitTest) (name : string) =
+        match test.PathReplay with
+        | Some pathReplay ->
+            let path = Path.Combine(currentDir.FullName, $"{name}{pathReplayExtension}")
+            pathReplay.Serialize path
+        | None -> ()
 
     interface IDisposable with
         override x.Dispose() =
@@ -32,11 +40,15 @@ type UnitTests(outputDir : string) =
 
     member x.GenerateTest (test : UnitTest) =
         testNumber <- testNumber + 1u
-        generateTest test ("test" + testNumber.ToString())
+        let name = "test" + testNumber.ToString()
+        generateTest test name
+        savePathReplay test name
 
     member x.GenerateError (test : UnitTest) =
         errorNumber <- errorNumber + 1u
-        generateTest test ("error" + errorNumber.ToString())
+        let name = "error" + errorNumber.ToString()
+        generateTest test name
+        savePathReplay test name
 
     member x.WriteReport (reporter : Action<TextWriter>) =
         let reportFileName = $"%s{currentDir.FullName}%c{Path.DirectorySeparatorChar}report.txt"

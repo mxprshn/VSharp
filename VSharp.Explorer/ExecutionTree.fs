@@ -1,5 +1,6 @@
 namespace VSharp.Explorer
 
+open VSharp
 open System.Collections.Generic
 
 type private executionTreeNode<'a> =
@@ -8,6 +9,7 @@ type private executionTreeNode<'a> =
         parent : executionTreeNode<'a> option
         mutable depth : int
         states : List<'a>
+        index : int
     }
 
 [<AllowNullLiteral>]
@@ -20,6 +22,7 @@ type ExecutionTree<'a when 'a : equality>(initialState : 'a) =
             parent = None
             depth = 0
             states = List<'a>()
+            index = -1 
         }
 
     do
@@ -47,6 +50,20 @@ type ExecutionTree<'a when 'a : equality>(initialState : 'a) =
         else
             let childIndex = randomInt % current.children.Count
             pick current.children[childIndex] randomNonNegIntFunc
+            
+    let rec getExecutionPathRec node acc =
+        match node with
+        | Some node ->
+            if node.index = -1 then
+                let repeatCount = node.depth
+                let repeated = List.replicate repeatCount 0
+                repeated @ acc
+            else
+                let parentDepth = node.parent.Value.depth
+                let repeatCount = node.depth - parentDepth - 1
+                let repeated = List.replicate repeatCount 0
+                getExecutionPathRec node.parent (node.index :: (repeated @ acc)) 
+        | None -> __unreachable__()
 
     member x.States with get() = stateToNode.Keys |> seq
 
@@ -68,19 +85,21 @@ type ExecutionTree<'a when 'a : equality>(initialState : 'a) =
                         parent = Some parentNode
                         depth = parentNode.depth + 1
                         states = List<'a>()
+                        index = 0 
                     }
                 newParentNode.states.Add parent
                 parentNode.children.Add newParentNode
                 stateToNode[parent] <- newParentNode
                 let wasRemoved = parentNode.states.Remove parent
                 assert wasRemoved
-                for child in children do
+                for i, child in Seq.indexed children do
                     let childNode =
                         {
                             children = List<executionTreeNode<'a>>()
                             parent = Some parentNode
                             depth = parentNode.depth + 1
                             states = List<'a>()
+                            index = i + 1 // + 1, cause the 0th one is the parent
                         }
                     childNode.states.Add child
                     parentNode.children.Add childNode
@@ -103,3 +122,12 @@ type ExecutionTree<'a when 'a : equality>(initialState : 'a) =
             None
         else
             pick initialStateNode randomNonNegIntFunc |> Some
+            
+    member x.GetForkIndices state =
+        let leafNode = ref initialStateNode
+        if not <| stateToNode.TryGetValue(state, leafNode) then
+            []
+        else
+            getExecutionPathRec (Some leafNode.Value) []
+            
+            

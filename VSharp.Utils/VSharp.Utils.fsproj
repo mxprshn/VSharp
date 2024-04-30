@@ -42,6 +42,7 @@
         <Compile Include="ExternMocking.fs" />
         <Compile Include="PhysicalAddress.fs" />
         <Compile Include="MemoryGraph.fs" />
+        <Compile Include="PathReplay.fs" />
         <Compile Include="UnitTest.fs" />
         <Compile Include="UnitTests.fs" />
         <Compile Include="Copier.fs" />

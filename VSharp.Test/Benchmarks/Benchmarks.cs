@@ -35,22 +35,6 @@ internal static class Benchmarks
         return process.IsSuccess();
     }
 
-    private class Reporter: IReporter
-    {
-        private readonly UnitTests _unitTests;
-
-        public Reporter(UnitTests unitTests)
-        {
-            _unitTests = unitTests;
-        }
-
-        public void ReportFinished(UnitTest unitTest) => _unitTests.GenerateTest(unitTest);
-        public void ReportException(UnitTest unitTest) => _unitTests.GenerateError(unitTest);
-        public void ReportIIE(InsufficientInformationException iie) => TestContext.Progress.WriteLine($"[IIE] {iie.Message}");
-        public void ReportInternalFail(Method? method, Exception exn) => TestContext.Progress.WriteLine($"[ERROR] {method.Name}: {exn}");
-        public void ReportCrash(Exception exn) => TestContext.Progress.WriteLine($"[CRASH] {exn}");
-    }
-
     // TODO: Add support for fuzzing
     public static BenchmarkResult Run(
         BenchmarkTarget target,
@@ -92,7 +76,8 @@ internal static class Benchmarks
             checkAttributes: false,
             stopOnCoverageAchieved: -1,
             randomSeed: randomSeed,
-            stepsLimit: stepsLimit
+            stepsLimit: stepsLimit,
+            savePathReplays: true
         );
 
         var fuzzerOptions = new FuzzerOptions(
@@ -108,7 +93,7 @@ internal static class Benchmarks
             explorationModeOptions: explorationModeOptions
         );
 
-        using var explorer = new Explorer.Explorer(explorationOptions, new Reporter(unitTests));
+        using var explorer = new Explorer.Explorer(explorationOptions, new TestReporter(unitTests));
 
         explorer.StartExploration(
             new[] {exploredMethodInfo},

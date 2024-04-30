@@ -54,8 +54,7 @@ type internal ExecutionTreeSearcher(randomSeed : int option) =
     let remove (state : cilState) =
         let entryMethod = state.EntryMethod
         let tree = ref null
-        let treeFound = trees.TryGetValue(entryMethod, tree)
-        if treeFound then
+        if trees.TryGetValue(entryMethod, tree) then
             let tree = tree.Value
             tree.Remove state |> ignore
             if tree.StatesCount = 0 then
@@ -71,8 +70,7 @@ type internal ExecutionTreeSearcher(randomSeed : int option) =
     let update (parent : cilState) newStates =
         let entryMethod = parent.EntryMethod
         let tree = ref null
-        let treeFound = trees.TryGetValue(entryMethod, tree)
-        if treeFound then
+        if trees.TryGetValue(entryMethod, tree) then
             tree.Value.AddFork parent newStates |> ignore
 
     interface IForwardSearcher with

@@ -96,6 +96,7 @@ public readonly record struct VSharpOptions
     private const bool DefaultReleaseBranches = true;
     private const int DefaultRandomSeed = -1;
     private const uint DefaultStepsLimit = 0;
+    private const bool DefaultSavePathReplays = false;
 
     public readonly int Timeout = DefaultTimeout;
     public readonly int SolverTimeout = DefaultSolverTimeout;
@@ -109,6 +110,7 @@ public readonly record struct VSharpOptions
     public readonly bool ReleaseBranches = DefaultReleaseBranches;
     public readonly int RandomSeed = DefaultRandomSeed;
     public readonly uint StepsLimit = DefaultStepsLimit;
+    public readonly bool SavePathReplays = DefaultSavePathReplays; 
 
     /// <summary>
     /// Symbolic virtual machine options.
@@ -125,6 +127,7 @@ public readonly record struct VSharpOptions
     /// <param name="releaseBranches">If true and timeout is specified, a part of allotted time in the end is given to execute remaining states without branching.</param>
     /// <param name="randomSeed">Fixed seed for random operations. Used if greater than or equal to zero.</param>
     /// <param name="stepsLimit">Number of symbolic machine steps to stop execution after. Zero value means no limit.</param>
+    /// <param name="savePathReplays">If true, for each generated test a replay file is saved. Replay file allows to reproduce the symbolic machine state of the test.</param>
     public VSharpOptions(
         int timeout = DefaultTimeout,
         int solverTimeout = DefaultSolverTimeout,
@@ -137,7 +140,8 @@ public readonly record struct VSharpOptions
         ExplorationMode explorationMode = DefaultExplorationMode,
         bool releaseBranches = DefaultReleaseBranches,
         int randomSeed = DefaultRandomSeed,
-        uint stepsLimit = DefaultStepsLimit)
+        uint stepsLimit = DefaultStepsLimit,
+        bool savePathReplays = DefaultSavePathReplays)
     {
         Timeout = timeout;
         SolverTimeout = solverTimeout;
@@ -151,6 +155,7 @@ public readonly record struct VSharpOptions
         ReleaseBranches = releaseBranches;
         RandomSeed = randomSeed;
         StepsLimit = stepsLimit;
+        SavePathReplays = savePathReplays;
     }
 
     /// <summary>

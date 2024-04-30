@@ -451,7 +451,8 @@ namespace VSharp.Test
                         checkAttributes: _checkAttributes,
                         stopOnCoverageAchieved: _expectedCoverage ?? -1,
                         randomSeed: _randomSeed,
-                        stepsLimit: _stepsLimit
+                        stepsLimit: _stepsLimit,
+                        savePathReplays: true
                     );
 
                     var fuzzerOptions = new FuzzerOptions(

@@ -15,7 +15,7 @@ open VSharp.Explorer
 open VSharp.Solver
 
 type IReporter =
-    abstract member ReportFinished: UnitTest -> unit
+    abstract member ReportFinished : UnitTest -> unit
     abstract member ReportException : UnitTest -> unit
     abstract member ReportIIE : InsufficientInformationException -> unit
     abstract member ReportInternalFail : Method -> Exception -> unit
@@ -104,6 +104,8 @@ type private SVMExplorer(explorationOptions: ExplorationOptions, statistics: SVM
         | InterleavedMode(base1, stepCount1, base2, stepCount2) ->
             InterleavedSearcher([mkForwardSearcher base1, stepCount1; mkForwardSearcher base2, stepCount2]) :> IForwardSearcher
 
+    let mutable pathReplayTrackingSearcher : PathReplayTrackingSearcher option = None
+
     let mutable searcher : IBidirectionalSearcher =
         match options.explorationMode with
         | TestCoverageMode(_, searchMode) ->
@@ -112,11 +114,21 @@ type private SVMExplorer(explorationOptions: ExplorationOptions, statistics: SVM
                     GuidedSearcher(mkForwardSearcher searchMode, RecursionBasedTargetManager(statistics, options.recThreshold)) :> IForwardSearcher
                 else
                     mkForwardSearcher searchMode
+            let baseSearcher =
+                if options.savePathReplays then
+                    let pathReplayTrackingSearcherValue = PathReplayTrackingSearcher baseSearcher
+                    pathReplayTrackingSearcher <- Some pathReplayTrackingSearcherValue
+                    pathReplayTrackingSearcherValue :> IForwardSearcher
+                else
+                    baseSearcher
             BidirectionalSearcher(baseSearcher, BackwardSearcher(), DummyTargetedSearcher.DummyTargetedSearcher()) :> IBidirectionalSearcher
         | StackTraceReproductionMode _ -> __notImplemented__()
+        | PathReplayMode forkIndices ->
+            let pathReplayingSearcher = PathReplayingSearcher (List.ofSeq forkIndices)
+            BidirectionalSearcher(pathReplayingSearcher, BackwardSearcher(), DummyTargetedSearcher.DummyTargetedSearcher()) :> IBidirectionalSearcher
 
     let releaseBranches() =
-        if not branchesReleased then
+        if not branchesReleased && not options.savePathReplays then
             branchesReleased <- true
             statistics.OnBranchesReleased()
             ReleaseBranches()
@@ -132,6 +144,14 @@ type private SVMExplorer(explorationOptions: ExplorationOptions, statistics: SVM
         reporter.ReportIIE state.iie.Value
 
     let reportIncomplete = reporter.ReportIIE
+
+    let createPathReplay (entryMethod : Method) (forkIndices : forkIndices) =
+        {
+            assemblyPath = entryMethod.Module.Assembly.Location
+            moduleFullyQualifiedName = entryMethod.Module.FullyQualifiedName
+            methodToken = entryMethod.MetadataToken
+            forkIndices = List.toArray forkIndices
+        }
 
     let reportState (suite : testSuite) (cilState : cilState) =
         try
@@ -156,6 +176,13 @@ type private SVMExplorer(explorationOptions: ExplorationOptions, statistics: SVM
                 match TestGenerator.state2test suite entryMethod state with
                 | Some test ->
                     statistics.TrackFinished(cilState, isError)
+                    if options.savePathReplays then
+                        match pathReplayTrackingSearcher with
+                        | Some pathReplayTrackingSearcherValue ->
+                            let forkIndices = pathReplayTrackingSearcherValue.ExportForkIndices cilState
+                            let pathReplay = createPathReplay entryMethod forkIndices
+                            test.PathReplay <- Some pathReplay
+                        | None -> __unreachable__()
                     match suite with
                     | Test -> reporter.ReportFinished test
                     | Error _ -> reporter.ReportException test
@@ -412,6 +439,7 @@ type private SVMExplorer(explorationOptions: ExplorationOptions, statistics: SVM
                         cov >= options.stopOnCoverageAchieved
                     isCoverageAchieved <- checkCoverage
             | StackTraceReproductionMode _ -> __notImplemented__()
+            | PathReplayMode _ -> ()
 
         member x.StartExploration isolated entryPoints =
             task {

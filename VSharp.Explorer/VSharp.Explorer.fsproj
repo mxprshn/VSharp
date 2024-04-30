@@ -32,6 +32,8 @@
         <Compile Include="GuidedSearcher.fs" />
         <Compile Include="FairSearcher.fs" />
         <Compile Include="BidirectionalSearcher.fs" />
+        <Compile Include="PathReplayTrackingSearcher.fs" />
+        <Compile Include="PathReplayingSearcher.fs" />
         <Compile Include="Explorer.fs" />
     </ItemGroup>
 

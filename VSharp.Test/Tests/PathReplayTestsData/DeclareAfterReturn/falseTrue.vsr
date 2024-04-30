@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<pathReplay xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <assemblyPath>/Users/max/Repos/VSharp/VSharp.Test/bin/Release/net7.0/VSharp.Test.dll</assemblyPath>
+  <moduleFullyQualifiedName>/Users/max/Repos/VSharp/VSharp.Test/bin/Release/net7.0/VSharp.Test.dll</moduleFullyQualifiedName>
+  <methodToken>100663705</methodToken>
+  <forkIndices>
+    <int>0</int>
+    <int>0</int>
+    <int>0</int>
+    <int>1</int>
+    <int>0</int>
+    <int>0</int>
+    <int>0</int>
+    <int>0</int>
+    <int>0</int>
+    <int>0</int>
+    <int>0</int>
+    <int>0</int>
+    <int>0</int>
+  </forkIndices>
+</pathReplay>
