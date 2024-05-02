@@ -15,7 +15,7 @@ type prependCilStateResult =
 
 type searchAction =
     | PrependCilState of cilState * int
-    
+
 with
    override x.ToString() = "SearchAction"
 
@@ -28,7 +28,7 @@ type searchStackFrame = {
 
     override x.ToString() =
         $"[#{x.id}|{x.searchState.ToString()}]"
-      
+
 type searchStepResult =
     | NoMoreSteps
     | Continue
@@ -37,27 +37,27 @@ type searchStepResult =
 type MethodSequenceSearcher(targetState : cilState) =
     let stack = LinkedList<searchStackFrame>()
     let framesByMethods = Dictionary<IMethod, List<searchStackFrame>>()
-    
+
     let targetState = targetState
-    
+
     let methodExplorer: IMethodSymbolicExplorer = MethodSymbolicExplorer(fun () -> ExecutionTreeSearcher(Some 42))
-    
+
     let mutable actionCount = 0
     let mutable currentStackFrameId = 0u
-    
+
     let getNextStackFrameId() =
         let idToReturn = currentStackFrameId
         currentStackFrameId <- currentStackFrameId + 1u
         idToReturn
-    
+
     let checkSetter setter varId (methodSequenceElement : methodSequenceElement) =
         match methodSequenceElement with
         | Call(method, _, Some this, _) when method = setter && this = varId -> true
         | _ -> false
-        
+
     let wasSetterCalled searchState setter varId =
         List.exists (checkSetter setter varId) searchState.sequence.elements
-        
+
     let hasCilStateTouchedFields (searchState : searchState) (cilState : cilState) =
         let constantsInCondition = Terms.GetConstants (PathConditionToSeq searchState.condition)
         let fieldsInCondition = HashSet<fieldId>()
@@ -74,12 +74,12 @@ type MethodSequenceSearcher(targetState : cilState) =
                 PersistentDict.values stats.touchedFields |> Seq.fold PersistentSet.union PersistentSet.empty |> PersistentSet.toSeq |> Seq.map Reflection.wrapField
             | None -> Seq.empty
         Seq.exists fieldsInCondition.Contains touchedFields
-    
-    let newFrame (searchState : searchState) = 
+
+    let newFrame (searchState : searchState) =
         let varSubsts = Dictionary<IMethod, varSubst list>()
         let actionQueue = LinkedList<searchAction>()
         let frame = { id = getNextStackFrameId(); searchState = searchState; varSubsts = varSubsts; actions = actionQueue }
-        
+
         let visitMethod (method : IMethod) (filterCilState : cilState -> bool) =
             let mutable methodFrames = ref null
             if framesByMethods.TryGetValue(method, methodFrames) then
@@ -88,7 +88,7 @@ type MethodSequenceSearcher(targetState : cilState) =
                 let methodFrames = List()
                 methodFrames.Add frame
                 framesByMethods[method] <- methodFrames
-            
+
             match methodExplorer.GetStates method with
             | Some cilStates ->
                 for cilState in cilStates |> Seq.filter filterCilState do
@@ -96,26 +96,27 @@ type MethodSequenceSearcher(targetState : cilState) =
             | None ->
                 methodExplorer.Enqueue method |> ignore
 
-        let primitiveVariables = searchState.variables |> Seq.groupBy _.typ |> Seq.filter (fun (t, _) -> not <| Utils.canBeCreatedBySolver t) |> Seq.toList
+        let nonPrimitiveVariables = searchState.variables |> Seq.groupBy _.typ |> Seq.filter (fun (t, _) -> not <| Utils.canBeCreatedBySolver t) |> Seq.toList
 
-        for typ, variables in primitiveVariables do
+        for typ, variables in nonPrimitiveVariables do
             for setter in Utils.getPropertySetters typ do
                 let setterSubsts = Seq.filter (not << wasSetterCalled searchState setter) variables
                                    |> Seq.map (fun v -> PersistentDict.ofSeq [ v, StackVal(ThisKey setter) ])
                                    |> Seq.toList
                 if not <| List.isEmpty setterSubsts then
                     varSubsts[setter] <- setterSubsts
-                    visitMethod setter (hasCilStateTouchedFields searchState) 
+                    visitMethod setter (hasCilStateTouchedFields searchState)
 
-        for typ, variables in primitiveVariables do
+        for typ, variables in nonPrimitiveVariables do
             let substTargets = Utils.nonEmptySubsets (Seq.toList variables) |> List.filter (not << List.isEmpty)
             // We can substitute return value of the method to any subset of existing variables
             let ctors = seq {
-                yield! typ.GetConstructors()
-                       |> Seq.map Application.getMethod
-                       |> Seq.sortByDescending Utils.getNonTrivialParametersCount
-                       |> Seq.map MethodWrappers.getConstructorWrapper
-                       
+                if Utils.canBeSymbolicallyInstantiated typ then
+                    yield! typ.GetConstructors()
+                           |> Seq.map Application.getMethod
+                           |> Seq.sortByDescending Utils.getNonTrivialParametersCount
+                           |> Seq.map MethodWrappers.getConstructorWrapper
+
                 if not <| typ.IsValueType then
                     yield MethodWrappers.getNullConstructor typ
             }
@@ -126,7 +127,7 @@ type MethodSequenceSearcher(targetState : cilState) =
                     substs.Add subst
                 varSubsts[ctor] <- Seq.toList substs
                 visitMethod ctor (fun _ -> true)
-                
+
         frame
 
     let onCilStatesExplored (method : IMethod, cilStates : cilState list) =
@@ -137,28 +138,28 @@ type MethodSequenceSearcher(targetState : cilState) =
                     hasCilStateTouchedFields frame.searchState cilState
                 else
                     true
-                
+
             // TODO: some better logic
             for cilState in cilStates |> Seq.filter filterState do
                 frame.actions.AddLast (PrependCilState(cilState, 0)) |> ignore
                 actionCount <- actionCount + 1
-            
-            
+
+
     let isPrependMethodCall (method : IMethod) action =
         match action with
         | PrependCilState(cilState, _) -> cilState.entryMethod.Value :> IMethod = method
-            
+
     let onExplorationFinished (method : IMethod) =
         let framesToRemove = List()
         let framesByMethod = framesByMethods[method]
         for frame in framesByMethod do
-            if not <| Seq.exists (isPrependMethodCall method) frame.actions then 
+            if not <| Seq.exists (isPrependMethodCall method) frame.actions then
                 frame.varSubsts.Remove method |> ignore
             if frame.varSubsts.Count = 0 then
                 framesToRemove.Add frame
         for frameToRemove in framesToRemove do
             stack.Remove frameToRemove |> ignore
-            framesByMethod.Remove frameToRemove |> ignore 
+            framesByMethod.Remove frameToRemove |> ignore
     do
         methodExplorer.OnStates.Add onCilStatesExplored
         methodExplorer.OnExplorationFinished.Add onExplorationFinished
@@ -167,7 +168,7 @@ type MethodSequenceSearcher(targetState : cilState) =
         let newFrame = newFrame searchState
         stack.AddFirst(LinkedListNode(newFrame))
         actionCount <- actionCount + int newFrame.actions.Count
-        
+
     let prependState (searchState : searchState) (cilState : cilState) (subst : varSubst) =
         let getRetValTerm() =
             match EvaluationStack.Length cilState.state.memory.EvaluationStack with
@@ -179,9 +180,9 @@ type MethodSequenceSearcher(targetState : cilState) =
                 let typ = if method.IsConstructor then method.DeclaringType else method.ReturnType
                 Some <| Types.Cast result typ
             | _ -> __unreachable__()
-        
+
         let retValTerm = lazy getRetValTerm()
-    
+
         let getSourceTerm (varSubstSource : varSubstSource) =
             match varSubstSource with
             | RetVal ->
@@ -189,22 +190,22 @@ type MethodSequenceSearcher(targetState : cilState) =
                 | Some retValTerm -> retValTerm
                 | None -> __unreachable__()
             | StackVal key ->
-                
+
                 Memory.ReadLocalVariable cilState.state key
-                
+
         let method = cilState.entryMethod.Value
         let mappingFrame = List<stackKey * term option * Type>()
-        
+
         for variable in searchState.variables do
             let toKey = Variables.stackKeyOf variable
             let typ = variable.typ
             let term = Option.map getSourceTerm (PersistentDict.tryFind subst variable)
             mappingFrame.Add (toKey, term, typ)
- 
+
         Memory.NewStackFrame cilState.state None (List.ofSeq mappingFrame)
-        
+
         let wlp = Memory.WLP cilState.state searchState.condition
-        
+
         if IsFalsePathCondition wlp then
             Memory.PopFrame cilState.state
             Unsat
@@ -213,7 +214,7 @@ type MethodSequenceSearcher(targetState : cilState) =
             | SolverInteraction.SmtUnsat _ | SolverInteraction.SmtUnknown _ ->
                 Memory.PopFrame cilState.state
                 Unsat
-            | SolverInteraction.SmtSat satInfo -> 
+            | SolverInteraction.SmtSat satInfo ->
                 let stackToVar = Substitutions.mapThisAndParametersToVars method
                 let substitutedVars = PersistentDict.keys subst
                 let remainingVars = List.filter (fun v -> not <| Seq.contains v substitutedVars) searchState.variables
@@ -227,21 +228,21 @@ type MethodSequenceSearcher(targetState : cilState) =
                     sequence = MethodSequence.addCall searchState.sequence method stackToVar subst
                     parent = Some searchState
                 }
-                
+
                 Memory.PopFrame cilState.state
                 Sat newState
-                
+
     let tryRemoveFrame (frame : searchStackFrame) =
         let methodsToRemove = Seq.filter methodExplorer.IsExplorationFinished frame.varSubsts.Keys
         for methodToRemove in methodsToRemove do
-            if not <| Seq.exists (isPrependMethodCall methodToRemove) frame.actions then 
+            if not <| Seq.exists (isPrependMethodCall methodToRemove) frame.actions then
                 frame.varSubsts.Remove methodToRemove |> ignore
         if frame.varSubsts.Count = 0 then
             stack.Remove frame |> ignore
             for method in frame.varSubsts.Keys do
                 framesByMethods[method].Remove frame |> ignore
 
-    
+
     let rec makeStep (startFromFrame : LinkedListNode<searchStackFrame>) : searchStepResult =
         if stack.Count = 0 then
             NoMoreSteps
@@ -277,7 +278,7 @@ type MethodSequenceSearcher(targetState : cilState) =
                             stack.AddBefore(currentFrameNode, LinkedListNode(newFrame))
                             actionCount <- actionCount + int newFrame.actions.Count
                             if SearchState.isComplete newState then
-                                
+
                                 SequenceFound newState.sequence
                             else
                                 Continue
