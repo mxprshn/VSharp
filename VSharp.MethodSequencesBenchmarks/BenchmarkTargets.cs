@@ -11,7 +11,9 @@ public class BenchmarkTargets
     {
         var btcPayServerTargets = new BtcPayServerTargets(Console.Out, benchmarksPath);
         var loanExamTarget = VSharpTargets.LoanExam();
-        foreach (var target in btcPayServerTargets.All().Concat(loanExamTarget))
+        var openRaTargets = new OpenRaTargets(Console.Out, benchmarksPath);
+        var osuTargets = new OsuTargets(Console.Out, benchmarksPath);
+        foreach (var target in btcPayServerTargets.All().Concat(openRaTargets.All()).Concat(osuTargets.All()).Concat(loanExamTarget))
         {
             _targetsById[target.Id] = target;
         }

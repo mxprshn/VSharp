@@ -17,14 +17,9 @@ class Program
     private const int TestGenerationTimeoutS = 120;
     private const int MethodSequenceSearchTimeoutS = 30;
 
-    private static string GetTargetDirName(BenchmarkTarget target)
-    {
-        return $"{target.Method.MetadataToken}_{target.Method.Name}";
-    }
-
     private static IReadOnlyList<TestInfo> RunTestsGeneration(BenchmarkTarget target, string outputPath, string replayDirName)
     {
-        var targetPath = Path.Combine(outputPath, target.SuiteName, GetTargetDirName(target));
+        var targetPath = Path.Combine(outputPath, target.SuiteName, Utils.GetTargetDirName(target));
         var testInfos = new List<TestInfo>();
         if (!Directory.Exists(targetPath))
         {
@@ -91,7 +86,7 @@ class Program
     {
         var stats = new SequenceStatistics();
         var result = true;
-        var targetPath = Path.Combine(outputPath, target.SuiteName, GetTargetDirName(target));
+        var targetPath = Path.Combine(outputPath, target.SuiteName, Utils.GetTargetDirName(target));
         var replayDirPath = Path.Combine(targetPath, replayDirName);
         Directory.CreateDirectory(replayDirPath);
 
@@ -169,6 +164,17 @@ class Program
             new Command("list", "Lists available benchmarks");
         listCommand.AddArgument(benchmarksPathArgument);
 
+        var statsCollectionCommand =
+            new Command("stats", "Collects statistics and plots graphs");
+        var benchmarkIdsFileArgument = new Argument<FileInfo>("ids", description: "File with benchmark ids to collect stats for");
+        var runsPathDirArgument = new Argument<DirectoryInfo>("runs", description: "Directory with benchmarks runs");
+        statsCollectionCommand.AddArgument(benchmarkIdsFileArgument);
+        statsCollectionCommand.AddArgument(runsPathDirArgument);
+        statsCollectionCommand.AddArgument(benchmarksPathArgument);
+        statsCollectionCommand.AddOption(outputOption);
+
+        runCommand.AddArgument(benchmarksPathArgument);
+
         runCommand.SetHandler(context =>
         {
             var parseResult = context.ParseResult;
@@ -218,9 +224,23 @@ class Program
             targets.PrintAvailableBenchmarks(false);
         });
 
+        statsCollectionCommand.SetHandler(context =>
+        {
+            var parseResult = context.ParseResult;
+            var idsFile = parseResult.GetValueForArgument(benchmarkIdsFileArgument);
+            var benchmarksPath = parseResult.GetValueForArgument(benchmarksPathArgument);
+            var runsPath = parseResult.GetValueForArgument(runsPathDirArgument);
+            var output = parseResult.GetValueForOption(outputOption);
+            var targets = new BenchmarkTargets(benchmarksPath.FullName);
+            var collector = new StatisticsCollector(targets, idsFile, runsPath, output);
+            collector.SequenceCountHistogram();
+            collector.SaveSequenceFailuresReport();
+        });
+
         var rootCommand = new RootCommand();
         rootCommand.AddCommand(runCommand);
         rootCommand.AddCommand(listCommand);
+        rootCommand.AddCommand(statsCollectionCommand);
         rootCommand.Invoke(args);
     }
 }
