@@ -15,69 +15,79 @@ namespace VSharp.MethodSequencesBenchmarks;
 class Program
 {
     private const int TestGenerationTimeoutS = 120;
-    private const int MethodSequenceSearchTimeoutS = 30;
+    private const int MethodSequenceSearchTimeoutS = 15;
+    private const int RandomSeed = 42;
+
+    // TODO: Replay sometimes sucks
+    private static IReadOnlyList<TestInfo> TrueReplay(BenchmarkTarget target, string outputPath, string replayDirName)
+    {
+        var targetPath = Path.Combine(outputPath, target.SuiteName, Utils.GetTargetDirName(target));
+        var testInfos = new List<TestInfo>();
+
+        var replayDirPath = Path.Combine(targetPath, replayDirName);
+        Directory.CreateDirectory(replayDirPath);
+        var logsFilePath = Path.Combine(replayDirPath, "logs.log");
+        using var logFileStream = File.Create(logsFilePath);
+        using var logFileWriter = new StreamWriter(logFileStream);
+        Console.WriteLine($"Found replays for method {target.Method}, replaying them...");
+
+        var replays = Directory.EnumerateFiles(targetPath, "*.vsr").ToList();
+
+        using (var pb = new ProgressBar(replays.Count, "Replaying...", ConsoleColor.Green))
+        {
+            foreach (var replayPath in replays)
+            {
+                pb.Message = $"Replaying {replayPath}...";
+                var result = Benchmarks.Replay(logFileWriter, target, replayPath, replayDirPath);
+                var name = Path.GetFileNameWithoutExtension(replayPath);
+                var testInfo = result.TestInfos.Single() with { Name = name };
+                testInfos.Add(testInfo);
+                pb.Tick();
+            }
+        }
+
+        return testInfos;
+    }
 
     private static IReadOnlyList<TestInfo> RunTestsGeneration(BenchmarkTarget target, string outputPath, string replayDirName)
     {
         var targetPath = Path.Combine(outputPath, target.SuiteName, Utils.GetTargetDirName(target));
         var testInfos = new List<TestInfo>();
-        if (!Directory.Exists(targetPath))
+        var executionTreeContributedCoverageMode = searchMode.NewInterleavedMode(searchMode.ExecutionTreeMode, 1, searchMode.ContributedCoverageMode, 1);
+
+        if (Directory.Exists(targetPath))
         {
-            Console.WriteLine($"Cannot find replays for method {target.Method}, running SVM...");
-            Directory.CreateDirectory(targetPath);
-            var logsFilePath = Path.Combine(targetPath, "logs.log");
-            using var logFileStream = File.Create(logsFilePath);
-            using var logFileWriter = new StreamWriter(logFileStream);
-            var executionTreeContributedCoverageMode = searchMode.NewInterleavedMode(searchMode.ExecutionTreeMode, 1, searchMode.ContributedCoverageMode, 1);
-
-            BenchmarkResult result;
-
-            using (var pb = new FixedDurationBar(TimeSpan.FromSeconds(TestGenerationTimeoutS), $"Generating tests for {target.Method}"))
-            {
-                result = Benchmarks.Run(logFileWriter, target, executionTreeContributedCoverageMode, targetPath, createSubdir: false, timeoutS: TestGenerationTimeoutS, renderAndBuildTests: true, calculateCoverage: true);
-                // TODO: save some stats here
-            }
-
-            testInfos.AddRange(result.TestInfos);
-
-            var stats = new MethodStatistics
-            {
-                GenerationTimeMillis = (uint)result.Statistics.CurrentExplorationTime.TotalMilliseconds,
-                CoveragePercent = result.Coverage ?? -1,
-                StepsCount = result.Statistics.StepsCount,
-                InternalFails = result.Statistics.InternalFails.Select(e => e.ToString()).ToList(),
-                AllTestsPassed = result.AllTestsPassed,
-                IsRenderingSuccessful = result.IsRenderingSuccessful
-            };
-            var statsFilePath = Path.Combine(targetPath, "stats.json");
-            using var statsFileStream = File.Create(statsFilePath);
-            using var statsFileWriter = new StreamWriter(statsFileStream);
-            statsFileWriter.Write(JsonSerializer.Serialize(stats));
+            targetPath = Path.Combine(targetPath, replayDirName);
         }
-        else
+
+        Directory.CreateDirectory(targetPath);
+        var logsFilePath = Path.Combine(targetPath, "logs.log");
+        using var logFileStream = File.Create(logsFilePath);
+        using var logFileWriter = new StreamWriter(logFileStream);
+
+        BenchmarkResult result;
+
+        using (var pb = new FixedDurationBar(TimeSpan.FromSeconds(TestGenerationTimeoutS), $"Generating tests for {target.Method}"))
         {
-            var replayDirPath = Path.Combine(targetPath, replayDirName);
-            Directory.CreateDirectory(replayDirPath);
-            var logsFilePath = Path.Combine(replayDirPath, "logs.log");
-            using var logFileStream = File.Create(logsFilePath);
-            using var logFileWriter = new StreamWriter(logFileStream);
-            Console.WriteLine($"Found replays for method {target.Method}, replaying them...");
-
-            var replays = Directory.EnumerateFiles(targetPath, "*.vsr").ToList();
-
-            using (var pb = new ProgressBar(replays.Count, "Replaying...", ConsoleColor.Green))
-            {
-                foreach (var replayPath in replays)
-                {
-                    pb.Message = $"Replaying {replayPath}...";
-                    var result = Benchmarks.Replay(logFileWriter, target, replayPath, replayDirPath);
-                    var name = Path.GetFileNameWithoutExtension(replayPath);
-                    var testInfo = result.TestInfos.Single() with { Name = name };
-                    testInfos.Add(testInfo);
-                    pb.Tick();
-                }
-            }
+            result = Benchmarks.Run(logFileWriter, target, executionTreeContributedCoverageMode, targetPath, createSubdir: false, timeoutS: TestGenerationTimeoutS, renderAndBuildTests: true, calculateCoverage: true, randomSeed: RandomSeed);
+            // TODO: save some stats here
         }
+
+        testInfos.AddRange(result.TestInfos);
+
+        var stats = new MethodStatistics
+        {
+            GenerationTimeMillis = (uint)result.Statistics.CurrentExplorationTime.TotalMilliseconds,
+            CoveragePercent = result.Coverage ?? -1,
+            StepsCount = result.Statistics.StepsCount,
+            InternalFails = result.Statistics.InternalFails.Select(e => e.ToString()).ToList(),
+            AllTestsPassed = result.AllTestsPassed,
+            IsRenderingSuccessful = result.IsRenderingSuccessful
+        };
+        var statsFilePath = Path.Combine(targetPath, "stats.json");
+        using var statsFileStream = File.Create(statsFilePath);
+        using var statsFileWriter = new StreamWriter(statsFileStream);
+        statsFileWriter.Write(JsonSerializer.Serialize(stats));
 
         return testInfos;
     }
@@ -90,40 +100,52 @@ class Program
         var replayDirPath = Path.Combine(targetPath, replayDirName);
         Directory.CreateDirectory(replayDirPath);
 
-        try
+        if (!SupportValidation.IsSupported(testInfo.State))
         {
-            // TODO: we may have problems with static state
-            var searcher = new MethodSequenceSearcher(testInfo.State);
-            var stopwatch = new Stopwatch();
-            stopwatch.Start();
-            var timeout = TimeSpan.FromSeconds(MethodSequenceSearchTimeoutS);
-            var stepsCount = 0u;
-            while (stopwatch.Elapsed < timeout)
+            stats.IsUnsupported = true;
+        }
+        else
+        {
+            try
             {
-                var foundSequences = searcher.MakeStep();
-                stepsCount++;
-                if (foundSequences.Count > 0)
+                // TODO: we may have problems with static state
+                var searcher = new MethodSequenceSearcher(testInfo.State);
+                var stopwatch = new Stopwatch();
+                stopwatch.Start();
+                var timeout = TimeSpan.FromSeconds(MethodSequenceSearchTimeoutS);
+                var stepsCount = 0u;
+                while (stopwatch.Elapsed < timeout)
                 {
-                    stopwatch.Stop();
-                    var sequence = foundSequences.First();
+                    var foundSequences = searcher.MakeStep();
+                    stepsCount++;
+                    if (foundSequences.Count > 0)
+                    {
+                        stopwatch.Stop();
+                        var sequence = foundSequences.First();
 
-                    stats.StepsCount = stepsCount;
-                    stats.GenerationTimeMs = (uint)stopwatch.Elapsed.TotalMilliseconds;
-                    stats.SequenceLength = (uint)sequence.elements.Length;
+                        stats.StepsCount = stepsCount;
+                        stats.GenerationTimeMs = (uint)stopwatch.Elapsed.TotalMilliseconds;
+                        stats.SequenceLength = (uint)sequence.elements.Length;
 
-                    var sequenceFilePath = Path.Combine(replayDirPath, $"{testInfo.Name}.seq");
-                    using var sequenceFileStream = File.Create(sequenceFilePath);
-                    using var sequenceFileWriter = new StreamWriter(sequenceFileStream);
-                    sequenceFileWriter.Write(sequence.ToString());
-                    break;
+                        var sequenceFilePath = Path.Combine(replayDirPath, $"{testInfo.Name}.seq");
+                        using var sequenceFileStream = File.Create(sequenceFilePath);
+                        using var sequenceFileWriter = new StreamWriter(sequenceFileStream);
+                        sequenceFileWriter.Write(sequence.ToString());
+                        break;
+                    }
                 }
             }
-        }
-        catch (Exception e)
-        {
-            Console.WriteLine(e.ToString());
-            stats.Exception = e.ToString();
-            result = false;
+            catch (InsufficientInformationException e)
+            {
+                Console.WriteLine(e.ToString());
+                stats.IsUnsupported = true;
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine(e.ToString());
+                stats.Exception = e.ToString();
+                result = false;
+            }
         }
 
         var statsFilePath = Path.Combine(replayDirPath, $"{testInfo.Name}.json");
@@ -233,8 +255,11 @@ class Program
             var output = parseResult.GetValueForOption(outputOption);
             var targets = new BenchmarkTargets(benchmarksPath.FullName);
             var collector = new StatisticsCollector(targets, idsFile, runsPath, output);
+            collector.GetMaxSequenceGenerationTime();
             collector.SequenceCountHistogram();
             collector.SaveSequenceFailuresReport();
+            collector.CountTotalStates();
+            collector.ComputeTimes();
         });
 
         var rootCommand = new RootCommand();
