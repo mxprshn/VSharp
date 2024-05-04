@@ -18,6 +18,8 @@
 ## Проблемы
 
 - wlp валится на моках вшарпа
+- валится конструктор Func с IntPtr
+- Исполнение RotateRadians(Double) не завершается
 
 ## Бенчмарки
 
@@ -108,3 +110,50 @@ openra
 - Количество исключений
 - Количество тестов
 - Количество ошибок
+
+### Перепрогнать
+! И выставить старый таймаут !
+
+openra-OpenRA.Graphics.SheetBuilder-Add-100666807
+
+osu-osu.Game.Rulesets.RulesetInfo-CompareTo-100678064
+osu-osu.Game.Rulesets.RulesetInfo-CreateInstance-100678069
+osu-osu.Game.Beatmaps.BeatmapInfo-AudioEquals-100698739
+osu-osu.Game.Beatmaps.BeatmapInfo-BackgroundEquals-100698740
+osu-osu.Game.Beatmaps.BeatmapInfo-ResetOnlineInfo-100698706
+
+btcpayserver-BTCPayServer.Payments.Bitcoin.BitcoinLikePaymentData-PaymentCompleted-100670672
+btcpayserver-BTCPayServer.Services.Invoices.InvoiceEntity-GetInternalTags-100674121
+btcpayserver-BTCPayServer.Services.Invoices.InvoiceEntity-UpdateTotals-100674130
+btcpayserver-BTCPayServer.Services.Invoices.InvoiceEntity-GetPaymentMethods-100674204
+btcpayserver-BTCPayServer.Services.Invoices.PaymentMethod-GetPaymentMethodDetails-100674279
+btcpayserver-BTCPayServer.Data.StoreBlob-GetDefaultRateRules-100674934
+
+osu-osu.Game.Screens.Select.BeatmapCarousel-SelectNext-100667140
+osu-osu.Game.Screens.Select.BeatmapCarousel-SelectNextRandom-100667143
+osu-osu.Game.Rulesets.Objects.HitObject-CreateSlidingSamples-100679061
+osu-osu.Game.Rulesets.Objects.HitObject-CreateHitSampleInfo-100679062
+
+osu-osu.Game.Screens.Select.BeatmapCarousel-SelectBeatmap-100667139
+osu-osu.Game.Scoring.ScoreInfo-GetStatisticsForDisplay-100677790
+osu-osu.Game.Overlays.Mods.ModPresetTooltip-SetContent-100687112
+
+btcpayserver-BTCPayServer.Services.Invoices.InvoiceEntity-UpdateTotals-100674130
+btcpayserver-BTCPayServer.Services.Invoices.InvoiceEntity-EntityToDTO-100674200
+btcpayserver-BTCPayServer.Services.Invoices.InvoiceEntity-GetPaymentMethods-100674204
+
+osu-osu.Game.Overlays.Mods.ModColumn-SelectAll-100686952 
+osu-osu.Game.Overlays.Mods.ModColumn-FlushPendingSelections-100686954
+
+osu-osu.Game.Online.Chat.Channel-AddLocalEcho-100691559
+osu-osu.Game.Online.Chat.Channel-ReplaceMessage-100691562
+
+## Выкинуть
+
+openra-add
+osu-osu.Game.Rulesets.Objects.HitObject-CreateSlidingSamples-100679061 -- генерация сиквенса не завершилась
+RotateRadians/Degrees
+
+## Replays
+
+- Неправильно replay-ятся тесты для openra-OpenRA.Graphics.SheetBuilder-Add-100666807
