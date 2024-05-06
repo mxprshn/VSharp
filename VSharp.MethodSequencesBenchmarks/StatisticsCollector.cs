@@ -1,8 +1,12 @@
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using MathNet.Numerics.Statistics;
 using ScottPlot;
+using ShellProgressBar;
+using VSharp.CSharpUtils;
 using VSharp.Test.Benchmarks;
+using Plot = ScottPlot.Plot;
 
 namespace VSharp.MethodSequencesBenchmarks;
 
@@ -14,7 +18,8 @@ public class StatisticsCollector
     private readonly BenchmarkTargets _targets;
     private readonly string _timestamp;
 
-    public StatisticsCollector(BenchmarkTargets targets, FileInfo benchmarkIdsFile, DirectoryInfo runsDir, DirectoryInfo outputDir)
+    public StatisticsCollector(BenchmarkTargets targets, FileInfo benchmarkIdsFile, DirectoryInfo runsDir,
+        DirectoryInfo outputDir)
     {
         _runsDir = runsDir;
         _outputDir = outputDir;
@@ -34,7 +39,8 @@ public class StatisticsCollector
         foreach (var target in _benchmarkIds.Select(_targets.GetById))
         {
             var targetRootDirPath = Path.Combine(_runsDir.FullName, target.SuiteName, Utils.GetTargetDirName(target));
-            var lastRunDir = Directory.EnumerateDirectories(targetRootDirPath, "2024*").OrderDescending().FirstOrDefault();
+            var lastRunDir = Directory.EnumerateDirectories(targetRootDirPath, "2024*").OrderDescending()
+                .FirstOrDefault();
             if (lastRunDir == null)
             {
                 continue;
@@ -76,14 +82,14 @@ public class StatisticsCollector
         var plot = new Plot();
         var ticks = new List<Tick>();
         var bars = new List<Bar>();
-        bars.Add(new Bar { Position = 1, Value = failedCount, FillColor = Colors.Red});
+        bars.Add(new Bar { Position = 1, Value = failedCount, FillColor = Colors.Red });
         ticks.Add(new Tick(1, "Возникла\nошибка"));
-        bars.Add(new Bar { Position = 2, Value = timeoutedCount, FillColor = Colors.Yellow});
+        bars.Add(new Bar { Position = 2, Value = timeoutedCount, FillColor = Colors.Yellow });
         ticks.Add(new Tick(2, "Лимит\nвремени\nисчепан"));
         var currentBar = 3;
         foreach (var seqLength in lengthToCount.Keys.Order())
         {
-            bars.Add(new Bar { Position = currentBar, Value = lengthToCount[seqLength], FillColor = Colors.LawnGreen});
+            bars.Add(new Bar { Position = currentBar, Value = lengthToCount[seqLength], FillColor = Colors.LawnGreen });
             ticks.Add(new Tick(currentBar, seqLength.ToString()));
             currentBar++;
         }
@@ -125,7 +131,8 @@ public class StatisticsCollector
         foreach (var target in _benchmarkIds.Select(_targets.GetById))
         {
             var targetRootDirPath = Path.Combine(_runsDir.FullName, target.SuiteName, Utils.GetTargetDirName(target));
-            var lastRunDir = Directory.EnumerateDirectories(targetRootDirPath, "2024*").OrderDescending().FirstOrDefault();
+            var lastRunDir = Directory.EnumerateDirectories(targetRootDirPath, "2024*").OrderDescending()
+                .FirstOrDefault();
             if (lastRunDir == null)
             {
                 continue;
@@ -180,7 +187,8 @@ public class StatisticsCollector
         foreach (var target in _benchmarkIds.Select(_targets.GetById))
         {
             var targetRootDirPath = Path.Combine(_runsDir.FullName, target.SuiteName, Utils.GetTargetDirName(target));
-            var lastRunDir = Directory.EnumerateDirectories(targetRootDirPath, "2024*").OrderDescending().FirstOrDefault();
+            var lastRunDir = Directory.EnumerateDirectories(targetRootDirPath, "2024*").OrderDescending()
+                .FirstOrDefault();
             if (lastRunDir == null)
             {
                 continue;
@@ -197,6 +205,7 @@ public class StatisticsCollector
                 }
             }
         }
+
         Console.WriteLine($"Max sequence generation time: {maxTime}ms");
     }
 
@@ -223,7 +232,7 @@ public class StatisticsCollector
         }
     }
 
-    public void ComputeTimes()
+    public void CalculateMedianTime()
     {
         var vsharpTimes = new List<float>();
         var overheadTimes = new List<float>();
@@ -248,7 +257,8 @@ public class StatisticsCollector
 
             vsharpTimes.Add(methodStats.GenerationTimeMillis);
 
-            var lastRunDir = Directory.EnumerateDirectories(targetRootDirPath, "2024*").OrderDescending().FirstOrDefault();
+            var lastRunDir = Directory.EnumerateDirectories(targetRootDirPath, "2024*").OrderDescending()
+                .FirstOrDefault();
             if (lastRunDir == null)
             {
                 continue;
@@ -279,4 +289,223 @@ public class StatisticsCollector
         Console.WriteLine($"VSharp median: {vsharpMedian}");
         Console.WriteLine($"Seqs median: {seqsMedian}");
     }
+
+    private bool GetTotalCoverage(BenchmarkTarget target, out CoverageStats coverageStats)
+    {
+        if (target.Method.IsConstructor)
+        {
+            coverageStats = default;
+            return false;
+
+        }
+        var targetRootDirPath = Path.Combine(_runsDir.FullName, target.SuiteName, Utils.GetTargetDirName(target));
+        var testsDir = Directory.EnumerateDirectories(targetRootDirPath, "2024*").OrderDescending()
+            .FirstOrDefault();
+        if (testsDir == null)
+        {
+            coverageStats = default;
+            return false;
+        }
+
+        if (!Directory.EnumerateFiles(testsDir, "*.vst").Any())
+        {
+            testsDir = targetRootDirPath;
+        }
+
+        var totalCoverageReportFile = new FileInfo(Path.Combine(testsDir, "totalCoverage.xml"));
+        if (!totalCoverageReportFile.Exists)
+        {
+            if (!DotCover.RunForVSharpTests(new DirectoryInfo(testsDir), totalCoverageReportFile, Console.Out))
+            {
+                coverageStats = default;
+                return false;
+            }
+        }
+
+        try
+        {
+            coverageStats = DotCover.GetMethodCoverageStatsFromReport(totalCoverageReportFile, (MethodInfo)target.Method);
+            return true;
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e);
+            coverageStats = default;
+            return false;
+        }
+    }
+
+    private bool GetSequenceCoverage(BenchmarkTarget target, out CoverageStats coverageStats)
+    {
+        if (target.Method.IsConstructor)
+        {
+            coverageStats = default;
+            return false;
+        }
+
+        var targetRootDirPath = Path.Combine(_runsDir.FullName, target.SuiteName, Utils.GetTargetDirName(target));
+        var lastRunDir = Directory.EnumerateDirectories(targetRootDirPath, "2024*").OrderDescending()
+            .FirstOrDefault();
+        if (lastRunDir == null)
+        {
+            coverageStats = default;
+            return false;
+        }
+        var testsDir = lastRunDir;
+        if (!Directory.EnumerateFiles(testsDir, "*.vst").Any())
+        {
+            testsDir = targetRootDirPath;
+        }
+
+        var testsWithSequencesNames = Directory.EnumerateFiles(lastRunDir, "*.seq")
+            .Select(Path.GetFileNameWithoutExtension).ToHashSet();
+
+        if (testsWithSequencesNames.Count == 0)
+        {
+            coverageStats = default;
+            return true;
+        }
+
+        var sequenceCoverageReportFile = new FileInfo(Path.Combine(testsDir, "sequenceCoverage.xml"));
+        if (!sequenceCoverageReportFile.Exists)
+        {
+            var tempDir = Directory.CreateTempSubdirectory();
+            var testsToRunDotCover = Directory.EnumerateFiles(testsDir, "*.vst")
+                .Where(t => testsWithSequencesNames.Contains(Path.GetFileNameWithoutExtension(t)));
+            foreach (var testToRunDotCover in testsToRunDotCover)
+            {
+                File.Copy(testToRunDotCover, Path.Combine(tempDir.FullName, Path.GetFileName(testToRunDotCover)));
+            }
+
+            if (!DotCover.RunForVSharpTests(tempDir, sequenceCoverageReportFile, Console.Out))
+            {
+                coverageStats = default;
+                return false;
+            }
+        }
+
+        try
+        {
+            coverageStats = DotCover.GetMethodCoverageStatsFromReport(sequenceCoverageReportFile, (MethodInfo)target.Method);
+            return true;
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e);
+            coverageStats = default;
+            return false;
+        }
+    }
+
+
+    public void CoverageScatterPlot()
+    {
+        var totalCoverages = new global::System.Collections.Generic.List<CoverageStats>(); // Why Rider complains...
+        var sequenceCoverages = new global::System.Collections.Generic.List<CoverageStats>();
+        var skippedCount = 0;
+
+        using (var pb = new ProgressBar(_benchmarkIds.Count, "Running dotCover...", ConsoleColor.Green)) {
+            foreach (var target in _benchmarkIds.Select(_targets.GetById))
+            {
+                pb.Message = $"Running dotCover... (skipped methods: {skippedCount})";
+
+                if (!GetTotalCoverage(target, out var totalCoverageStats))
+                {
+                    skippedCount++;
+                    pb.Tick();
+                    continue;
+                }
+                if (!GetSequenceCoverage(target, out var sequenceCoverageStats))
+                {
+                    skippedCount++;
+                    pb.Tick();
+                    continue;
+                }
+                totalCoverages.Add(totalCoverageStats);
+                sequenceCoverages.Add(sequenceCoverageStats);
+                pb.Tick();
+            }
+        }
+
+        var pairsStats = new Dictionary<(int, int), List<int>>();
+
+        for (var i = 0; i < totalCoverages.Count; i++)
+        {
+            var coveragePercentsPair = (totalCoverages[i].CoveragePercent, sequenceCoverages[i].CoveragePercent);
+            if (pairsStats.TryGetValue(coveragePercentsPair, out var stmtsCounts))
+            {
+                stmtsCounts.Add(totalCoverages[i].TotalStatements);
+            }
+            else
+            {
+                stmtsCounts = new List<int> { totalCoverages[i].TotalStatements };
+                pairsStats[coveragePercentsPair] = stmtsCounts;
+            }
+        }
+
+        var plot = new Plot();
+
+        plot.Axes.Bottom.TickLabelStyle.FontSize = 18;
+        plot.Axes.Left.TickLabelStyle.FontSize = 18;
+
+        plot.YLabel("Покрытие (%) тестами, для которых сгенерирована последовательность", 18);
+        plot.XLabel("Покрытие (%) всеми тестами", 18);
+        plot.Axes.Bottom.Label.OffsetY = 18;
+        plot.Layout.Fixed(new PixelPadding(100));
+        plot.Axes.Bottom.TickLabelStyle.OffsetY = 10;
+
+        var diagonal = plot.Add.Line(0, 0, 100, 100);
+        diagonal.LineWidth = 3;
+        diagonal.Color = Colors.DarkSlateGray.WithAlpha(150);;
+
+        var x100 = plot.Add.Line(0, 100, 100, 100);
+        x100.LineWidth = 3;
+        x100.Color = Colors.DarkSlateGray.WithAlpha(150);
+
+        var y100 = plot.Add.Line(100, 0, 100, 100);
+        y100.LineWidth = 3;
+        y100.Color = Colors.DarkSlateGray.WithAlpha(150);
+
+        var x0 = plot.Add.Line(0, 0, 100, 0);
+        x0.LineWidth = 3;
+        x0.Color = Colors.DarkSlateGray.WithAlpha(150);
+
+        var y0 = plot.Add.Line(0, 0, 0, 100);
+        y0.LineWidth = 3;
+        y0.Color = Colors.DarkSlateGray.WithAlpha(150);
+
+        var maxStmtsCount = 50;
+        var pointsCount = pairsStats.Select(s => s.Value.Count).Sum();
+
+        foreach (var pairsStat in pairsStats)
+        {
+            var scatterPoint = plot.Add.ScatterPoints(new[] { pairsStat.Key.Item1 }, new[] { pairsStat.Key.Item2 });
+            scatterPoint.MarkerLineWidth = 4;
+            scatterPoint.MarkerSize = 12f + 100f * ((float)pairsStat.Value.Count / pointsCount);
+            var medianStmtsCount = pairsStat.Value.Select(c => (float)c).Median();
+            var factor = medianStmtsCount / maxStmtsCount;
+            if (factor <= 0.25)
+            {
+                scatterPoint.MarkerShape = MarkerShape.OpenCircle;
+            }
+            else if (factor <= 0.75)
+            {
+                scatterPoint.MarkerShape = MarkerShape.OpenTriangleUp;
+            }
+            else
+            {
+                scatterPoint.MarkerShape = MarkerShape.OpenSquare;
+            }
+
+            scatterPoint.MarkerLineColor = Color.InterpolateRgb(Colors.Crimson, Colors.LimeGreen, (float)pairsStat.Key.Item2 / pairsStat.Key.Item1);
+
+            var centerPoint = plot.Add.ScatterPoints(new[] { pairsStat.Key.Item1 }, new[] { pairsStat.Key.Item2 });
+            centerPoint.MarkerShape = MarkerShape.FilledCircle;
+            centerPoint.MarkerSize = 3;
+            centerPoint.Color = scatterPoint.MarkerLineColor;
+        }
+
+        plot.SavePng(Path.Combine(_outputDir.FullName, $"{_timestamp}_coverage.png"), 1500, 1000);
+    }
+
 }

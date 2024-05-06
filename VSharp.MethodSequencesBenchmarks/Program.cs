@@ -255,11 +255,7 @@ class Program
             var output = parseResult.GetValueForOption(outputOption);
             var targets = new BenchmarkTargets(benchmarksPath.FullName);
             var collector = new StatisticsCollector(targets, idsFile, runsPath, output);
-            collector.GetMaxSequenceGenerationTime();
-            collector.SequenceCountHistogram();
-            collector.SaveSequenceFailuresReport();
-            collector.CountTotalStates();
-            collector.ComputeTimes();
+            collector.CoverageScatterPlot();
         });
 
         var rootCommand = new RootCommand();
