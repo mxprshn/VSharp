@@ -7,23 +7,23 @@ open VSharp
 open VSharp.Core
 
 module MethodWrappers =
-    
+
     let private ctorWrapperName = "Ctor"
     let private nullCtorName = "Null"
-    
+
     let private wrappersAssemblyName = "MethodSequenceWrappers"
 
     let private wrappersModuleBuilder =
         let wrappersAssemblyName = wrappersAssemblyName
         let assemblyBuilder = AssemblyManager.DefineDynamicAssembly(AssemblyName wrappersAssemblyName, AssemblyBuilderAccess.Run)
         assemblyBuilder.DefineDynamicModule wrappersAssemblyName
-        
+
     let isConstructorWrapper (method : IMethod) : bool =
         method.Name = ctorWrapperName && method.DeclaringType.Assembly.GetName().Name = wrappersAssemblyName
-        
+
     let getNullConstructor (typ : Type): IMethod =
         assert(not <| typ.IsValueType)
-        let ctorTypeName = $"NullCtor<{typ.Name}>-{typ.MetadataToken}"
+        let ctorTypeName = $"NullCtor-{typ.MetadataToken}"
         let ctorMethodName = nullCtorName
         let existingType = wrappersModuleBuilder.GetType(ctorTypeName, false, false)
         let typ =
@@ -40,8 +40,8 @@ module MethodWrappers =
                 typeBuilder.CreateType()
         let wrapperMethod = typ.GetMethod ctorMethodName |> Application.getMethod
         wrapperMethod :> IMethod
-        
-        
+
+
     let getConstructorWrapper (ctor : IMethod): IMethod =
         assert ctor.IsConstructor
         // TODO: get rid of MethodBase access
