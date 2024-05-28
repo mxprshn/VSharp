@@ -1,5 +1,6 @@
 ﻿using System.CommandLine;
 using System.Diagnostics;
+using System.Reflection;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.ApplicationModels;
 using NUnit.Framework;
@@ -198,6 +199,30 @@ class Program
         runCommand.AddOption(generateSequencesOption);
         runCommand.AddOption(replayToRunOption);
 
+        var benchmarkDllPathArgument =
+            new Argument<FileInfo>("dll-path", description: "Path to the benchmark dll");
+        var benchmarkKeyArgument =
+            new Argument<string>("key", description: "Key name of the benchmark suite");
+
+        var outputFileArgument = new Argument<FileInfo>("output");
+        var shuffleSeedArgument = new Argument<int>("seed", description: "Seed to shuffle benchmarks");
+        var takeNArgument = new Argument<int>("seed", description: "Seed to shuffle benchmarks");
+
+        var detectBenchmarks =
+            new Command("detect", "Finds all methods suitable as benchmarks in assembly");
+        detectBenchmarks.AddArgument(benchmarkDllPathArgument);
+        detectBenchmarks.AddArgument(benchmarkKeyArgument);
+        detectBenchmarks.AddArgument(shuffleSeedArgument);
+        detectBenchmarks.AddArgument(takeNArgument);
+        detectBenchmarks.AddArgument(outputFileArgument);
+
+        var dllRunCommand =
+            new Command("dll-run", "Runs benchmark resolving them from assembly");
+        dllRunCommand.AddArgument(benchmarkDllPathArgument);
+        dllRunCommand.AddArgument(benchmarkIdArgument);
+        dllRunCommand.AddArgument(benchmarkKeyArgument);
+        dllRunCommand.AddOption(outputOption);
+
         var listCommand =
             new Command("list", "Lists available benchmarks");
         listCommand.AddArgument(benchmarksPathArgument);
@@ -211,7 +236,63 @@ class Program
         statsCollectionCommand.AddArgument(benchmarksPathArgument);
         statsCollectionCommand.AddOption(outputOption);
 
-        runCommand.AddArgument(benchmarksPathArgument);
+        detectBenchmarks.SetHandler(context =>
+        {
+            var parseResult = context.ParseResult;
+            var benchmarksDllPath = parseResult.GetValueForArgument(benchmarkDllPathArgument);
+            var outputPath = parseResult.GetValueForArgument(outputFileArgument);
+            var seed = parseResult.GetValueForArgument(shuffleSeedArgument);
+            var takeN = parseResult.GetValueForArgument(takeNArgument);
+            var key = parseResult.GetValueForArgument(benchmarkKeyArgument);
+
+            var benchmarkSelector = new BenchmarkSelector();
+            var assembly = AssemblyManager.LoadFromAssemblyPath(benchmarksDllPath.FullName);
+            using var outputFile = File.Create(outputPath.FullName);
+            using var fileWriter = new StreamWriter(outputFile);
+
+            var random = new Random(seed);
+            var benches = benchmarkSelector.GetBenchmarkTargetsFromAssembly(assembly, key)
+                .ToList()
+                .OrderBy(_ => random.Next())
+                .Take(takeN)
+                .ToList();
+
+            foreach (var bench in benches)
+            {
+                fileWriter.WriteLine(bench.Id);
+            }
+        });
+
+        dllRunCommand.SetHandler(context =>
+        {
+            var parseResult = context.ParseResult;
+            var dllPath = parseResult.GetValueForArgument(benchmarkDllPathArgument);
+            var benchKey = parseResult.GetValueForArgument(benchmarkKeyArgument);
+            var benchId = parseResult.GetValueForArgument(benchmarkIdArgument);
+            var outputPath = parseResult.GetValueForOption(outputOption);
+
+            var resolver = new BenchmarkSelector();
+            var targets =
+                resolver.GetBenchmarkTargetsFromAssembly(AssemblyManager.LoadFromAssemblyPath(dllPath.FullName), benchKey);
+            var target = targets.Single(t => t.Id == benchId);
+
+            var replayDirName = DateTime.Now.ToString("yyyy-MM-dd_HH.mm.ss");
+            var tests = RunTestsGeneration(target, outputPath.FullName, replayDirName);
+
+            using (var pb = new ProgressBar(tests.Count, "Generating sequence...", ConsoleColor.Green)) {
+                foreach (var test in tests)
+                {
+                    pb.Message = $"Generating sequence for {test.Name}...";
+                    var success = RunMethodSequenceGeneration(test, target, outputPath.FullName, replayDirName);
+                    if (!success)
+                    {
+                        pb.ForegroundColor = ConsoleColor.Yellow;
+                    }
+
+                    pb.Tick();
+                }
+            }
+        });
 
         runCommand.SetHandler(context =>
         {
@@ -279,6 +360,8 @@ class Program
         rootCommand.AddCommand(runCommand);
         rootCommand.AddCommand(listCommand);
         rootCommand.AddCommand(statsCollectionCommand);
+        rootCommand.AddCommand(detectBenchmarks);
+        rootCommand.AddCommand(dllRunCommand);
         rootCommand.Invoke(args);
     }
 }
