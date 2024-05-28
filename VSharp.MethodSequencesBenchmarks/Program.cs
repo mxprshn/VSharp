@@ -282,7 +282,7 @@ class Program
 
             using (var pb = new ProgressBar(tests.Count, "Generating sequence...", ConsoleColor.Green))
             {
-                var timeoutPerTest = TotalMethodSequenceSearchTimeoutS * 1000 / tests.Count;
+                var timeoutPerTest = int.Min(TotalMethodSequenceSearchTimeoutS * 1000 / tests.Count, 15000);
                 foreach (var test in tests)
                 {
                     pb.Message = $"Generating sequence for {test.Name}...";
@@ -322,8 +322,9 @@ class Program
                 return;
             }
 
-            using (var pb = new ProgressBar(tests.Count, "Generating sequence...", ConsoleColor.Green)) {
-                var timeoutPerTest = TotalMethodSequenceSearchTimeoutS * 1000 / tests.Count;
+            using (var pb = new ProgressBar(tests.Count, "Generating sequence...", ConsoleColor.Green))
+            {
+                var timeoutPerTest = int.Min(TotalMethodSequenceSearchTimeoutS * 1000 / tests.Count, 15000);
                 foreach (var test in tests)
                 {
                     pb.Message = $"Generating sequence for {test.Name}...";
