@@ -118,21 +118,37 @@ class Program
                 {
                     var foundSequences = searcher.MakeStep();
                     stepsCount++;
-                    if (foundSequences.Count > 0)
+                    if (foundSequences == null)
                     {
-                        stopwatch.Stop();
-                        var sequence = foundSequences.First();
-
-                        stats.StepsCount = stepsCount;
-                        stats.GenerationTimeMs = (uint)stopwatch.Elapsed.TotalMilliseconds;
-                        stats.SequenceLength = (uint)sequence.elements.Length;
-
-                        var sequenceFilePath = Path.Combine(replayDirPath, $"{testInfo.Name}.seq");
-                        using var sequenceFileStream = File.Create(sequenceFilePath);
-                        using var sequenceFileWriter = new StreamWriter(sequenceFileStream);
-                        sequenceFileWriter.Write(sequence.ToString());
                         break;
                     }
+
+                    if (foundSequences.Count <= 0) continue;
+
+                    stopwatch.Stop();
+                    var sequence = foundSequences.First();
+                    stats.SequenceLength = (uint)sequence.elements.Length;
+
+                    var sequenceFilePath = Path.Combine(replayDirPath, $"{testInfo.Name}.seq");
+                    using var sequenceFileStream = File.Create(sequenceFilePath);
+                    using var sequenceFileWriter = new StreamWriter(sequenceFileStream);
+                    sequenceFileWriter.Write(sequence.ToString());
+                    break;
+                }
+
+                var internalFails = new Dictionary<string, List<string>>();
+                foreach (var (method, methodFails) in searcher.DumpInternalFails())
+                {
+                    internalFails[method.ToString()] = methodFails.Select(f => f.ToString()).ToList();
+                }
+
+                stats.ExplorationExceptions = internalFails;
+                stats.StepsCount = stepsCount;
+                stats.GenerationTimeMs = (uint)stopwatch.Elapsed.TotalMilliseconds;
+
+                if (stats.SequenceLength <= 0)
+                {
+                    StatisticsCollector.DumpSequences(replayDirPath, target, testInfo.Name, searcher.DumpCurrentSequences(), searcher.DumpDiscardedSequences());
                 }
             }
             catch (InsufficientInformationException e)
@@ -143,7 +159,7 @@ class Program
             catch (Exception e)
             {
                 Console.WriteLine(e.ToString());
-                stats.Exception = e.ToString();
+                stats.CriticalException = e.ToString();
                 result = false;
             }
         }
@@ -255,7 +271,8 @@ class Program
             var output = parseResult.GetValueForOption(outputOption);
             var targets = new BenchmarkTargets(benchmarksPath.FullName);
             var collector = new StatisticsCollector(targets, idsFile, runsPath, output);
-            collector.CoverageScatterPlot();
+            collector.SaveSequenceFailuresReport();
+            collector.SequenceCountHistogram();
         });
 
         var rootCommand = new RootCommand();

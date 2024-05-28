@@ -2,9 +2,14 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using MathNet.Numerics.Statistics;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.Extensions.Logging;
 using ScottPlot;
 using ShellProgressBar;
 using VSharp.CSharpUtils;
+using VSharp.MethodSequences;
 using VSharp.Test.Benchmarks;
 using Plot = ScottPlot.Plot;
 
@@ -17,6 +22,7 @@ public class StatisticsCollector
     private readonly DirectoryInfo _outputDir;
     private readonly BenchmarkTargets _targets;
     private readonly string _timestamp;
+    private readonly SourceResolver _sourceResolver = new();
 
     public StatisticsCollector(BenchmarkTargets targets, FileInfo benchmarkIdsFile, DirectoryInfo runsDir,
         DirectoryInfo outputDir)
@@ -36,6 +42,9 @@ public class StatisticsCollector
         var lengthToCount = new Dictionary<uint, int>();
         var timeoutedCount = 0;
         var failedCount = 0;
+        var unsupportedCount = 0;
+        var vSharpFailedCount = 0;
+
         foreach (var target in _benchmarkIds.Select(_targets.GetById))
         {
             var targetRootDirPath = Path.Combine(_runsDir.FullName, target.SuiteName, Utils.GetTargetDirName(target));
@@ -51,16 +60,27 @@ public class StatisticsCollector
                 var json = File.ReadAllText(jsonFile);
                 var stats = JsonSerializer.Deserialize<SequenceStatistics>(json);
 
+                if (stats.IsUnsupported)
+                {
+                    unsupportedCount++;
+                    continue;
+                }
+
                 if (stats.SequenceLength == 0u)
                 {
-                    if (string.IsNullOrEmpty(stats.Exception))
-                    {
-                        timeoutedCount++;
-                    }
-                    else
+                    if (!string.IsNullOrEmpty(stats.CriticalException))
                     {
                         failedCount++;
+                        continue;
                     }
+
+                    if (stats.ExplorationExceptions is { Keys.Count: > 0 })
+                    {
+                        vSharpFailedCount++;
+                        continue;
+                    }
+
+                    timeoutedCount++;
                 }
                 else
                 {
@@ -85,8 +105,15 @@ public class StatisticsCollector
         bars.Add(new Bar { Position = 1, Value = failedCount, FillColor = Colors.Red });
         ticks.Add(new Tick(1, "Возникла\nошибка"));
         bars.Add(new Bar { Position = 2, Value = timeoutedCount, FillColor = Colors.Yellow });
-        ticks.Add(new Tick(2, "Лимит\nвремени\nисчепан"));
-        var currentBar = 3;
+        ticks.Add(new Tick(2, "Лимит\nвремени\nисчерпан"));
+
+        bars.Add(new Bar { Position = 3, Value = unsupportedCount, FillColor = Colors.LightGray });
+        ticks.Add(new Tick(3, "Не\nподдерживается\nв\nреализации"));
+
+        bars.Add(new Bar { Position = 4, Value = vSharpFailedCount, FillColor = Colors.DarkGray });
+        ticks.Add(new Tick(4, "Ошибка\nядра\nV#"));
+
+        var currentBar = 5;
         foreach (var seqLength in lengthToCount.Keys.Order())
         {
             bars.Add(new Bar { Position = currentBar, Value = lengthToCount[seqLength], FillColor = Colors.LawnGreen });
@@ -143,9 +170,9 @@ public class StatisticsCollector
                 var json = File.ReadAllText(jsonFile);
                 var stats = JsonSerializer.Deserialize<SequenceStatistics>(json);
 
-                if (string.IsNullOrEmpty(stats.Exception)) continue;
+                if (string.IsNullOrEmpty(stats.CriticalException)) continue;
 
-                var exceptionString = stats.Exception;
+                var exceptionString = stats.CriticalException;
                 var targetString = $"{target.Id} {Path.GetFileName(jsonFile)}";
                 if (failuresToBenches.TryGetValue(exceptionString, out var benches))
                 {
@@ -272,7 +299,7 @@ public class StatisticsCollector
                 var stats = JsonSerializer.Deserialize<SequenceStatistics>(json);
 
                 var genTime = stats.GenerationTimeMs;
-                if (string.IsNullOrEmpty(stats.Exception) && stats.SequenceLength == 0)
+                if (string.IsNullOrEmpty(stats.CriticalException) && stats.SequenceLength == 0)
                 {
                     genTime = 15000;
                 }
@@ -508,4 +535,81 @@ public class StatisticsCollector
         plot.SavePng(Path.Combine(_outputDir.FullName, $"{_timestamp}_coverage.png"), 1500, 1000);
     }
 
+    public static void DumpSequences(string outputPath, BenchmarkTarget target, string testName, IEnumerable<methodSequence> currentSequences, IEnumerable<methodSequence> discardedSequences)
+    {
+        var filePath = Path.Combine(outputPath, $"{testName}_sequences.md");
+        using var fileStream = File.Create(filePath);
+        using var writer = new StreamWriter(fileStream);
+
+        writer.WriteLine($"### {target} ({target.Id}), {testName}");
+
+        writer.WriteLine("#### Remaining sequences");
+
+        foreach (var sequence in currentSequences)
+        {
+            writer.WriteLine("```");
+            writer.WriteLine(sequence.ToString());
+            writer.WriteLine("```");
+        }
+
+        writer.WriteLine("#### Discarded sequences");
+
+        foreach (var sequence in discardedSequences)
+        {
+            writer.WriteLine("```");
+            writer.WriteLine(sequence.ToString());
+            writer.WriteLine("```");
+        }
+    }
+
+    public void GetLinesOfCode()
+    {
+        foreach (var target in _benchmarkIds.Select(_targets.GetById))
+        {
+            var method = target.Method;
+            BlockSyntax body;
+            if (method.IsConstructor)
+            {
+                var decl = _sourceResolver.GetSyntaxTree((ConstructorInfo)method);
+                body = decl.Body;
+            }
+            else
+            {
+                var decl = _sourceResolver.GetSyntaxTree((MethodInfo)method);
+                if (decl == null)
+                {
+                    Console.WriteLine("Hui");
+                }
+
+                body = decl.Body;
+            }
+            // Get the text of the method body
+            var text = body.SyntaxTree.GetText();
+
+            // Get the span of the method body
+            var span = body.FullSpan;
+
+            // Get all the trivia (comments, whitespace, etc.) within the span of the method body
+            var trivia = from token in body.DescendantTokens()
+                from trivium in token.LeadingTrivia.Concat(token.TrailingTrivia)
+                where trivium.IsKind(SyntaxKind.SingleLineCommentTrivia) ||
+                      trivium.IsKind(SyntaxKind.MultiLineCommentTrivia)
+                select trivium;
+
+            // Get the lines in the body
+            var lines = text.Lines.Where(line => line.Span.Start >= span.Start && line.Span.End <= span.End);
+
+            // Exclude lines that contain comments or are empty
+            var filteredLines = lines.Where(line =>
+            {
+                var lineText = line.ToString().Trim();
+                return !string.IsNullOrWhiteSpace(lineText) &&
+                       !trivia.Any(trivium => trivium.Span.IntersectsWith(line.Span));
+            }).ToList();
+
+            var loc = filteredLines.Count - 2;
+
+            Console.WriteLine($"{target}: {loc} LOC");
+        }
+    }
 }
