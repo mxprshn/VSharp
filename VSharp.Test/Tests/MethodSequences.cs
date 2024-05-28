@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Text;
 using VSharp.Test;
@@ -25,6 +26,44 @@ public struct TestStruct3
     }
 
     public int GetValue() => _value;
+}
+
+public interface ITaylorSwiftJetLogics
+{
+    bool ShouldFly(int miles);
+}
+
+public interface INowhereToFlyHandler
+{
+    bool Handle();
+}
+
+public class NowhereToFlyHandler : INowhereToFlyHandler
+{
+    public bool Handle()
+    {
+        throw new Exception();
+    }
+}
+
+public class TaylorSwiftJetLogics : ITaylorSwiftJetLogics
+{
+    private readonly INowhereToFlyHandler _handler;
+    public TaylorSwiftJetLogics(INowhereToFlyHandler errorHandler)
+    {
+        _handler = errorHandler;
+    }
+
+    public bool ShouldFly(int miles)
+    {
+        var centimeters = miles * 160934;
+        if (centimeters < 0)
+        {
+            return _handler.Handle();
+        }
+
+        return true;
+    }
 }
 
 public class TestClass
@@ -87,6 +126,17 @@ public class ClassWithStructCtor
 [TestSvmFixture]
 public static class MethodSequences
 {
+    [TestSvm]
+    public static int TaylorSwiftJetCost(ITaylorSwiftJetLogics logics, int miles)
+    {
+        if (logics.ShouldFly(miles))
+        {
+            return int.MaxValue;
+        }
+
+        throw new Exception();
+    }
+
     [TestSvm]
     public static bool Enums(TestEnum testEnum)
     {

@@ -6,6 +6,13 @@ namespace VSharp.Test.Benchmarks;
 
 public class VSharpTargets
 {
+    public static IEnumerable<BenchmarkTarget> TaylorSwift()
+    {
+        var assembly = Assembly.GetExecutingAssembly();
+        var type = assembly.ResolveType("MethodSequences");
+        yield return new BenchmarkTarget(type.GetMethod("TaylorSwiftJetCost"), "vsharp");
+    }
+
     public static IEnumerable<BenchmarkTarget> Strings()
     {
         var assembly = Assembly.GetExecutingAssembly();

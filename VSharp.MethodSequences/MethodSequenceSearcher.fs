@@ -165,7 +165,7 @@ type MethodSequenceSearcher(targetState : cilState) =
     do
         methodExplorer.OnStates.Add onCilStatesExplored
         methodExplorer.OnExplorationFinished.Add onExplorationFinished
-        let stackToVar = Substitutions.mapThisAndParametersToVars targetState.entryMethod.Value PersistentDict.empty
+        let stackToVar = Substitutions.mapThisAndParametersToVars targetState.entryMethod.Value (Some targetState) PersistentDict.empty
         let searchState = SearchState.fromCilState targetState stackToVar
         let newFrame = newFrame searchState
         stack.AddFirst(LinkedListNode(newFrame))
@@ -208,7 +208,7 @@ type MethodSequenceSearcher(targetState : cilState) =
 
         let wlp = Memory.WLP cilState.state searchState.condition
 
-        let stackToVar = Substitutions.mapThisAndParametersToVars method subst
+        let stackToVar = Substitutions.mapThisAndParametersToVars method None subst
         let newSequence = MethodSequence.addCall searchState.sequence method stackToVar subst
 
         if IsFalsePathCondition wlp then
@@ -284,7 +284,6 @@ type MethodSequenceSearcher(targetState : cilState) =
                             stack.AddBefore(currentFrameNode, LinkedListNode(newFrame))
                             actionCount <- actionCount + int newFrame.actions.Count
                             if SearchState.isComplete newState then
-
                                 SequenceFound newState.sequence
                             else
                                 Continue

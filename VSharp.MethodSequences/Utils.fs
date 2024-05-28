@@ -5,6 +5,10 @@ open System.Reflection
 open VSharp
 open VSharp.Core
 
+type UnsupportedException(message: string) =
+    inherit Exception(message)
+    new() = UnsupportedException("This operation is not supported.")
+
 module Utils =
 
     let hasInstanceThis (method : IMethod) = not method.IsConstructor && method.HasThis

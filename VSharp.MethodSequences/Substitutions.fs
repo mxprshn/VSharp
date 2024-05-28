@@ -4,6 +4,7 @@ open System
 open System.Collections.Generic
 open VSharp
 open VSharp.Core
+open VSharp.Interpreter.IL.CilState
 
 type varSubstSource =
     | RetVal
@@ -20,7 +21,21 @@ type stackToVar = pdict<stackKey, variableId>
 
 module Substitutions =
 
-    let mapThisAndParametersToVars (method : IMethod) (subst : varSubst) : stackToVar =
+    let getStackKeyTypeFromModel (key : stackKey) (cilState : cilState) =
+        match cilState.state.model with
+        | StateModel modelState ->
+            let modelAddress = modelState.memory.ReadStackLocation key
+            match modelAddress.term with
+            | HeapRef({term = ConcreteHeapAddress(addr)}, _) ->
+                match PersistentDict.tryFind modelState.memory.AllocatedTypes addr with
+                | Some(ConcreteType concreteTyp) ->
+                    concreteTyp
+                | _ ->
+                    key.TypeOfLocation
+            | _ -> key.TypeOfLocation
+        | _ -> internalfailf "Wrong model type in target state"
+
+    let mapThisAndParametersToVars (method : IMethod) (cilState : cilState option) (subst : varSubst) : stackToVar =
         seq {
             if Utils.hasInstanceThis method then
                 let thisKey = ThisKey method
@@ -28,7 +43,10 @@ module Substitutions =
                     match PersistentDict.toSeq subst |> Seq.tryFind (fun (_, src) -> src.MatchesKey thisKey) with
                     | Some(id, _) ->
                         id.typ
-                    | _ -> thisKey.TypeOfLocation
+                    | _ ->
+                        match cilState with
+                        | Some cilState -> getStackKeyTypeFromModel thisKey cilState
+                        | _ -> thisKey.TypeOfLocation
                 yield (thisKey, Variables.getFresh typ)
             for parameterInfo in method.Parameters do
                 let parameterKey = ParameterKey parameterInfo
@@ -36,7 +54,10 @@ module Substitutions =
                     match PersistentDict.toSeq subst |> Seq.tryFind (fun (_, src) -> src.MatchesKey parameterKey) with
                     | Some(id, _) ->
                         id.typ
-                    | _ -> parameterKey.TypeOfLocation
+                    | _ ->
+                        match cilState with
+                        | Some cilState -> getStackKeyTypeFromModel parameterKey cilState
+                        | _ -> parameterKey.TypeOfLocation
                 yield (parameterKey, Variables.getFresh typ)
         } |> PersistentDict.ofSeq
 

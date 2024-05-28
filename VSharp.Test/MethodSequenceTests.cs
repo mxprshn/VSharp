@@ -37,7 +37,7 @@ public class MethodSequenceTests
     [Test]
     public void SmokeTest()
     {
-        var loanExamMethod = VSharpTargets.LoanExam().First();
+        var loanExamMethod = VSharpTargets.TaylorSwift().First();
         var searchStrategy = searchMode.NewInterleavedMode(searchMode.ExecutionTreeMode, 1, searchMode.ContributedCoverageMode, 1);
         var svmOptions = new SVMOptions(
             explorationMode: explorationMode.NewTestCoverageMode(coverageZone.MethodZone, searchStrategy),
@@ -68,7 +68,7 @@ public class MethodSequenceTests
         explorer.StartExploration(new[] {loanExamMethod.Method}, new Tuple<MethodBase, EntryPointConfiguration>[] { });
 
         var interestingStates =
-            reporter.States.ToList();//Where(s => !s.IsUnhandledExceptionOrError).ToList();
+            reporter.States.ToList().Where(SupportValidation.IsSupported);//Where(s => !s.IsUnhandledExceptionOrError).ToList();
 
         foreach (var state in interestingStates)
         {
@@ -77,7 +77,7 @@ public class MethodSequenceTests
 
             var newSearcher = new MethodSequenceSearcher(state);
 
-            while (stopwatch.Elapsed < TimeSpan.FromSeconds(15.0))
+            while (stopwatch.Elapsed < TimeSpan.FromSeconds(3.0))
             {
                 var foundSequences = newSearcher.MakeStep();
                 if (foundSequences.Count == 0)
