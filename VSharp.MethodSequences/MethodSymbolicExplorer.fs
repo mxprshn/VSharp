@@ -1,5 +1,6 @@
 namespace VSharp.MethodSequences
 
+open System
 open System.Collections.Concurrent
 open System.Collections.Generic
 open VSharp
@@ -10,6 +11,8 @@ open VSharp.Interpreter.IL.CilState
 open VSharp.Utils
 
 type IMethodSymbolicExplorer =
+    abstract InternalFails: IReadOnlyDictionary<IMethod, List<Exception>>
+
     abstract OnStates: IEvent<IMethod * cilState list>
     abstract OnExplorationFinished: IEvent<IMethod>
 
@@ -31,7 +34,7 @@ type MethodSymbolicExplorer(createSearcher : unit -> IForwardSearcher) =
     let searchersQueue: IPriorityCollection<IMethod * IForwardSearcher, int> =
         BidictionaryPriorityQueue<IMethod * IForwardSearcher, int>()
 
-
+    let internalFails = Dictionary<IMethod, List<Exception>>()
 
     // TODO: this is copy-pasted from Explorer, unify
     let makeInitialCilStates (method : IMethod): cilState list =
@@ -114,7 +117,13 @@ type MethodSymbolicExplorer(createSearcher : unit -> IForwardSearcher) =
                     true
                 with
                 | e ->
-                    Logger.warning $"Removing state because of {e.ToString()}"
+                    let mutable methodFails = ref null
+                    if internalFails.TryGetValue(method, methodFails) then
+                        methodFails.Value.Add e
+                    else
+                        let methodFails = List<Exception>()
+                        methodFails.Add e
+                        internalFails[method] <- methodFails
                     searcher.Remove cilState
                     makeStep()
             | None ->
@@ -126,6 +135,7 @@ type MethodSymbolicExplorer(createSearcher : unit -> IForwardSearcher) =
     let isExplorationFinished method = finishedMethods.Contains method
 
     interface IMethodSymbolicExplorer with
+        member x.InternalFails = internalFails
         member x.OnStates = onStates.Publish
         member x.OnExplorationFinished = onExplorationFinished.Publish
         member x.Enqueue method = queue method

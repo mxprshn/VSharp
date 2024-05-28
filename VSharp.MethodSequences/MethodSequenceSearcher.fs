@@ -37,6 +37,7 @@ type searchStepResult =
 type MethodSequenceSearcher(targetState : cilState) =
     let stack = LinkedList<searchStackFrame>()
     let framesByMethods = Dictionary<IMethod, List<searchStackFrame>>()
+    let discardedSequences = List<methodSequence>()
 
     let targetState = targetState
 
@@ -160,10 +161,11 @@ type MethodSequenceSearcher(targetState : cilState) =
         for frameToRemove in framesToRemove do
             stack.Remove frameToRemove |> ignore
             framesByMethod.Remove frameToRemove |> ignore
+
     do
         methodExplorer.OnStates.Add onCilStatesExplored
         methodExplorer.OnExplorationFinished.Add onExplorationFinished
-        let stackToVar = Substitutions.mapThisAndParametersToVars targetState.entryMethod.Value
+        let stackToVar = Substitutions.mapThisAndParametersToVars targetState.entryMethod.Value PersistentDict.empty
         let searchState = SearchState.fromCilState targetState stackToVar
         let newFrame = newFrame searchState
         stack.AddFirst(LinkedListNode(newFrame))
@@ -206,16 +208,20 @@ type MethodSequenceSearcher(targetState : cilState) =
 
         let wlp = Memory.WLP cilState.state searchState.condition
 
+        let stackToVar = Substitutions.mapThisAndParametersToVars method subst
+        let newSequence = MethodSequence.addCall searchState.sequence method stackToVar subst
+
         if IsFalsePathCondition wlp then
             Memory.PopFrame cilState.state
+            discardedSequences.Add newSequence
             Unsat
         else
             match SolverInteraction.checkSat wlp with
             | SolverInteraction.SmtUnsat _ | SolverInteraction.SmtUnknown _ ->
                 Memory.PopFrame cilState.state
+                discardedSequences.Add newSequence
                 Unsat
             | SolverInteraction.SmtSat satInfo ->
-                let stackToVar = Substitutions.mapThisAndParametersToVars method
                 let substitutedVars = PersistentDict.keys subst
                 let remainingVars = List.filter (fun v -> not <| Seq.contains v substitutedVars) searchState.variables
                 let mappingState = Substitutions.createMappingState method stackToVar remainingVars
@@ -225,7 +231,7 @@ type MethodSequenceSearcher(targetState : cilState) =
                     condition = wlp
                     model = satInfo.mdl
                     variables = remainingVars @ (PersistentDict.values stackToVar |> Seq.toList)
-                    sequence = MethodSequence.addCall searchState.sequence method stackToVar subst
+                    sequence = newSequence
                     parent = Some searchState
                 }
 
@@ -292,7 +298,17 @@ type MethodSequenceSearcher(targetState : cilState) =
             result
         else
             match makeStep stack.First with
-            | Continue | NoMoreSteps -> result
+            | Continue -> result
+            | NoMoreSteps -> null
             | SequenceFound seq ->
                 result.Add seq
                 result
+
+    member x.DumpCurrentSequences() =
+        stack |> Seq.map (_.searchState.sequence) |> List
+
+    member x.DumpDiscardedSequences() =
+        discardedSequences :> IReadOnlyList<methodSequence>
+
+    member x.DumpInternalFails() =
+        methodExplorer.InternalFails
