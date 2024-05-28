@@ -24,8 +24,8 @@
         <Compile Include="MethodSequence.fs" />
         <Compile Include="SearchState.fs" />
         <Compile Include="MethodSymbolicExplorer.fs" />
-        <Compile Include="MethodSequenceSearcher.fs" />
         <Compile Include="SupportValidation.fs" />
+        <Compile Include="MethodSequenceSearcher.fs" />
         <Content Include="plan.md" />
     </ItemGroup>
 

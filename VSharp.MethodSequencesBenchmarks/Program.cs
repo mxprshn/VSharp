@@ -16,7 +16,7 @@ namespace VSharp.MethodSequencesBenchmarks;
 class Program
 {
     private const int TestGenerationTimeoutS = 120;
-    private const int MethodSequenceSearchTimeoutS = 15;
+    private const int TotalMethodSequenceSearchTimeoutS = 360;
     private const int RandomSeed = 42;
 
     // TODO: Replay sometimes sucks
@@ -93,7 +93,7 @@ class Program
         return testInfos;
     }
 
-    private static bool RunMethodSequenceGeneration(TestInfo testInfo, BenchmarkTarget target, string outputPath, string replayDirName)
+    private static bool RunMethodSequenceGeneration(TestInfo testInfo, BenchmarkTarget target, string outputPath, string replayDirName, TimeSpan timeout)
     {
         var stats = new SequenceStatistics();
         var result = true;
@@ -113,7 +113,6 @@ class Program
                 var searcher = new MethodSequenceSearcher(testInfo.State);
                 var stopwatch = new Stopwatch();
                 stopwatch.Start();
-                var timeout = TimeSpan.FromSeconds(MethodSequenceSearchTimeoutS);
                 var stepsCount = 0u;
                 while (stopwatch.Elapsed < timeout)
                 {
@@ -144,6 +143,8 @@ class Program
                 }
 
                 stats.ExplorationExceptions = internalFails;
+                stats.CompositionExceptions = searcher.DumpSearcherFails().Select(f => f.ToString()).ToList();
+
                 stats.StepsCount = stepsCount;
                 stats.GenerationTimeMs = (uint)stopwatch.Elapsed.TotalMilliseconds;
 
@@ -279,11 +280,13 @@ class Program
             var replayDirName = DateTime.Now.ToString("yyyy-MM-dd_HH.mm.ss");
             var tests = RunTestsGeneration(target, outputPath.FullName, replayDirName);
 
-            using (var pb = new ProgressBar(tests.Count, "Generating sequence...", ConsoleColor.Green)) {
+            using (var pb = new ProgressBar(tests.Count, "Generating sequence...", ConsoleColor.Green))
+            {
+                var timeoutPerTest = TotalMethodSequenceSearchTimeoutS * 1000 / tests.Count;
                 foreach (var test in tests)
                 {
                     pb.Message = $"Generating sequence for {test.Name}...";
-                    var success = RunMethodSequenceGeneration(test, target, outputPath.FullName, replayDirName);
+                    var success = RunMethodSequenceGeneration(test, target, outputPath.FullName, replayDirName, TimeSpan.FromMilliseconds(timeoutPerTest));
                     if (!success)
                     {
                         pb.ForegroundColor = ConsoleColor.Yellow;
@@ -320,10 +323,11 @@ class Program
             }
 
             using (var pb = new ProgressBar(tests.Count, "Generating sequence...", ConsoleColor.Green)) {
+                var timeoutPerTest = TotalMethodSequenceSearchTimeoutS * 1000 / tests.Count;
                 foreach (var test in tests)
                 {
                     pb.Message = $"Generating sequence for {test.Name}...";
-                    var success = RunMethodSequenceGeneration(test, target, outputPath.FullName, replayDirName);
+                    var success = RunMethodSequenceGeneration(test, target, outputPath.FullName, replayDirName, TimeSpan.FromMilliseconds(timeoutPerTest));
                     if (!success)
                     {
                         pb.ForegroundColor = ConsoleColor.Yellow;

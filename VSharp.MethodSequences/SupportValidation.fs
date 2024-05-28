@@ -3,6 +3,7 @@ namespace VSharp.MethodSequences
 open System
 open System.Collections.Generic
 open System.Reflection
+open VSharp
 open VSharp.CSharpUtils
 open VSharp.Core
 open VSharp.Core.API

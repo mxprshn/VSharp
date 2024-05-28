@@ -8,5 +8,6 @@ public class SequenceStatistics
     public string CriticalException { get; set; } = "";
 
     public Dictionary<string, List<string>> ExplorationExceptions { get; set; }
+    public List<string> CompositionExceptions { get; set; }
     public bool IsUnsupported { get; set; } = false;
 }

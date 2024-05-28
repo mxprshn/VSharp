@@ -49,13 +49,25 @@ public class NowhereToFlyHandler : INowhereToFlyHandler
 public class TaylorSwiftJetLogics : ITaylorSwiftJetLogics
 {
     private readonly INowhereToFlyHandler _handler;
+    private object _someStuff;
+
     public TaylorSwiftJetLogics(INowhereToFlyHandler errorHandler)
     {
         _handler = errorHandler;
     }
 
+    public void FixMe()
+    {
+        _someStuff = "Fixed";
+    }
+
     public bool ShouldFly(int miles)
     {
+        if (_someStuff == null)
+        {
+            throw new Exception();
+        }
+
         var centimeters = miles * 160934;
         if (centimeters < 0)
         {

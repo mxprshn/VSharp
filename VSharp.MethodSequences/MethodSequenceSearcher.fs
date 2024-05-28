@@ -35,6 +35,8 @@ type searchStepResult =
     | SequenceFound of methodSequence
 
 type MethodSequenceSearcher(targetState : cilState) =
+    let maxMethodsToTake = 10
+
     let stack = LinkedList<searchStackFrame>()
     let framesByMethods = Dictionary<IMethod, List<searchStackFrame>>()
     let discardedSequences = List<methodSequence>()
@@ -45,6 +47,8 @@ type MethodSequenceSearcher(targetState : cilState) =
 
     let mutable actionCount = 0
     let mutable currentStackFrameId = 0u
+
+    let searcherFails = List<Exception>();
 
     let getNextStackFrameId() =
         let idToReturn = currentStackFrameId
@@ -128,7 +132,6 @@ type MethodSequenceSearcher(targetState : cilState) =
                     substs.Add subst
                 varSubsts[ctor] <- Seq.toList substs
                 visitMethod ctor (fun _ -> true)
-
         frame
 
     let onCilStatesExplored (method : IMethod, cilStates : cilState list) =
@@ -277,16 +280,20 @@ type MethodSequenceSearcher(targetState : cilState) =
                             currentFrame.actions.AddFirst (PrependCilState(cilState, substIndex + 1)) |> ignore
                             actionCount <- actionCount + 1
                         let varSubst = currentFrame.varSubsts[method][substIndex]
-                        match prependState currentFrame.searchState cilState varSubst with
-                        | Unsat -> Continue
-                        | Sat newState ->
-                            let newFrame = newFrame newState
-                            stack.AddBefore(currentFrameNode, LinkedListNode(newFrame))
-                            actionCount <- actionCount + int newFrame.actions.Count
-                            if SearchState.isComplete newState then
-                                SequenceFound newState.sequence
-                            else
-                                Continue
+                        try
+                            match prependState currentFrame.searchState cilState varSubst with
+                            | Unsat -> Continue
+                            | Sat newState ->
+                                let newFrame = newFrame newState
+                                stack.AddBefore(currentFrameNode, LinkedListNode(newFrame))
+                                actionCount <- actionCount + int newFrame.actions.Count
+                                if SearchState.isComplete newState then
+                                    SequenceFound newState.sequence
+                                else
+                                    Continue
+                        with e ->
+                            searcherFails.Add e
+                            Continue
                 | _ -> __unreachable__()
     let mutable makeExplorerStep = true
     member x.MakeStep() =
@@ -303,6 +310,7 @@ type MethodSequenceSearcher(targetState : cilState) =
                 result.Add seq
                 result
 
+
     member x.DumpCurrentSequences() =
         stack |> Seq.map (_.searchState.sequence) |> List
 
@@ -311,3 +319,6 @@ type MethodSequenceSearcher(targetState : cilState) =
 
     member x.DumpInternalFails() =
         methodExplorer.InternalFails
+
+    member x.DumpSearcherFails() : IReadOnlyList<Exception> =
+        searcherFails
